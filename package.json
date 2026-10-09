@@ -1,0 +1,52 @@
+{
+  "name": "x402-spotcheck",
+  "version": "0.1.0",
+  "description": "Check before you pay: one-line guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios). Calls x402 Endpoint Spot-Check right before a payment; blocks on skip.",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE",
+    "examples"
+  ],
+  "scripts": {
+    "test": "node test/test.mjs",
+    "test:integration": "node test/integration.mjs"
+  },
+  "keywords": [
+    "x402",
+    "payments",
+    "agents",
+    "mcp",
+    "spot-check",
+    "guard",
+    "usdc",
+    "base"
+  ],
+  "author": "withgrokbot",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/withgrokbot/x402-spotcheck.git"
+  },
+  "homepage": "https://github.com/withgrokbot/x402-spotcheck#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@x402/axios": "^2.28.0",
+    "@x402/evm": "^2.28.0",
+    "@x402/fetch": "^2.28.0",
+    "axios": "^1.7.0",
+    "viem": "^2.21.0"
+  }
+}
