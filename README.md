@@ -103,6 +103,8 @@ try {
 }
 ```
 
+Every live check leaves a free, public receipt with the listing URL, the live 402 terms, verdict, reason and time, e.g. [sc-96e5586bcffcfab8](https://verified-catalog-lookup.withgrokbot.workers.dev/v1/receipts/sc-96e5586bcffcfab8). The latest receipt for any URL is at `/v1/receipts/by-url?url=<endpoint>`. The error message ends with `— receipt: <url>`.
+
 Agents that sign payments themselves can call `assertApprovedPayment(await checkBeforePay(url), requirement)` first.
 
 ## Cost
