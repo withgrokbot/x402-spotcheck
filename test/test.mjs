@@ -16,7 +16,7 @@ test("pay verdict: payment goes through; unpaid requests never trigger a check",
   assert.equal(r.status, 200);
   assert.equal(w.log.spot.length, 1, "one check, right before paying");
   assert.equal(w.log.spot[0].client, "my-router");
-  assert.equal(w.log.spot[0].ref, "x402-spotcheck");
+  assert.equal(w.log.spot[0].ref, "via-x402-spotcheck");
   assert.deepEqual(w.log.target.map((t) => t.paid), [false, true]);
 });
 

@@ -26,6 +26,7 @@ export declare function termsMismatch(requirement: any, approved: SpotDecision["
 export declare function narrowRequirements(accepts: any[], approved: SpotDecision["approved"]): Promise<{ kept: any[]; reasons: string[] }>;
 export declare function assertApprovedPayment(decision: SpotDecision, requirement: any): Promise<true>;
 export declare const DEFAULT_ENDPOINT: string;
+export declare const DEFAULT_REF: string;
 export declare function spotCheckFetch<F extends (input: any, init?: any) => Promise<Response>>(fetchImpl?: F, opts?: SpotCheckOptions): F;
 export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions): A;
 export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string, o?: { method?: string; intent?: any }) => Promise<SpotDecision>;

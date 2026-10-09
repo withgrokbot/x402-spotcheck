@@ -133,6 +133,7 @@ Routers: ask for a router client id and checks cost $0.001 each. They're billed 
 | `expected(url, intent)` | none | your listing `{ price, payTo, network }` |
 | `onDecision(d)` | none | log or meter every decision |
 | `cacheTtlMs` | `300000` | verdict cache per url and expectation |
+| `ref` | `"via-x402-spotcheck"` | attribution tag sent with each check; set your own, e.g. `spotCheckFetch(fetch, { ref: "via-agentkit" })` |
 
 Errors: `SpotCheckBlockedError` has `decision` (verdict, reason, approved terms), `reason`, and `receiptUrl` (the public receipt for that check, when the Worker returns one).
 

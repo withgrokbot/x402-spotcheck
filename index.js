@@ -2,6 +2,7 @@
 // Right before your client sends a payment, it asks Spot-Check about the target; skip blocks the payment,
 // pay lets it through, recheck is configurable (default: block). It never sees or holds your keys.
 
+export const DEFAULT_REF = "via-x402-spotcheck"; // attribution only; integrators set their own (e.g. via-cdp)
 export const DEFAULT_ENDPOINT = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/products/endpoint-spot-check";
 const PAY_HEADERS = ["payment-signature", "x-payment"];
 const USDC = new Set(["0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "0x036cbd53842c5426634e7929541ec2318f3dcf7e"]);
@@ -140,7 +141,7 @@ export function createSpotChecker(opts = {}) {
     const exp = (opts.expected && (await opts.expected(url, intent))) || {};
     const qs = new URLSearchParams({ url: String(url) });
     if (opts.client) qs.set("client", opts.client);
-    qs.set("ref", opts.ref || "x402-spotcheck");
+    qs.set("ref", opts.ref || DEFAULT_REF);
     if (String(method).toUpperCase() === "POST") qs.set("method", "POST");
     const price = exp.price;
     if (price != null) qs.set("claimed_price", String(price));
