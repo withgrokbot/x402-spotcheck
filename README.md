@@ -119,6 +119,8 @@ If you don't pass `payFetch` and the free check is used up, the guard counts Spo
 
 **First router: 1,000 free checks.** We give the first router or agent framework that integrates a client id with 1,000 full checks (paid-tier detail, no payment). Open an issue on this repo to ask for one.
 
+Routers: ask for a router client id and checks cost $0.001 each. They're billed as one $0.01 x402 payment per 10-check pack, and the other 9 are prepaid on that id. A router tier is needed because the facilitator charges about $0.002 per settlement, so a $0.001 payment per check would not cover it.
+
 ## Options
 
 | option | default | |
