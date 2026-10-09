@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { spotCheckFetch, spotCheckAxios, checkBeforePay, readPaymentIntent, SpotCheckBlockedError, createSpotChecker } from "../index.js";
-import { world, fakeWrapFetchWithPayment } from "./mock.mjs";
+import { world, fakeWrapFetchWithPayment, TERMS, USDC } from "./mock.mjs";
+import { createHash } from "node:crypto";
+import { termsString, termsMismatch, assertApprovedPayment } from "../index.js";
+const sha = (t) => createHash("sha256").update(termsString(t)).digest("hex");
+const acc = (o = {}) => ({ scheme: "exact", network: "eip155:8453", amount: "10000", asset: USDC, payTo: "0x" + "ab".repeat(20), maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" }, ...o });
 
 const T = [];
 const test = (n, f) => T.push([n, f]);
@@ -63,13 +67,13 @@ test("expected listing is forwarded; POST is probed as POST; verdicts are cached
   assert.equal(w.log.spot[0].claimed_price, "0.01");
   assert.equal(w.log.spot[0].pay_to, "0x" + "cd".repeat(20));
   assert.equal(w.log.spot[0].network, "eip155:8453");
-  assert.deepEqual(seen[0], { network: "eip155:8453", payTo: "0x" + "ab".repeat(20), priceUsd: 0.01 });
+  assert.deepEqual(seen.find(Boolean), { network: "eip155:8453", payTo: "0x" + "ab".repeat(20), priceUsd: 0.01 });
 });
 
 test("axios: request interceptor checks only requests that carry a payment header", async () => {
   const w = world({ verdicts: { "https://bad.test/api?q=1": ["skip", "pay_to_mismatch"] } });
   const handlers = [];
-  const inst = { interceptors: { request: { use: (f) => handlers.push(f) } } };
+  const inst = { interceptors: { request: { use: (f) => handlers.push(f) }, response: { use: () => {} } } };
   spotCheckAxios(inst, { fetch: w.fetch });
   const run = (cfg) => handlers.reduce((p, f) => p.then(f), Promise.resolve(cfg));
   assert.deepEqual(await run({ url: "https://bad.test/api", params: { q: 1 }, headers: {} }), { url: "https://bad.test/api", params: { q: 1 }, headers: {} });
@@ -85,6 +89,64 @@ test("checkBeforePay for agents/MCP and readPaymentIntent", async () => {
   assert.equal(w.log.spot[0].claimed_price, "0.01");
   assert.equal(readPaymentIntent("not base64"), null);
   assert.equal(typeof createSpotChecker(), "function");
+});
+
+test("PAY STEP (paid terms): matching 402 is signed; the signed payment is exactly the approved one", async () => {
+  const w = world({ approve: TERMS });
+  const r = await fakeWrapFetchWithPayment(spotCheckFetch(w.fetch))("https://good.test/api");
+  assert.equal(r.status, 200);
+  const sent = w.log.target.find((t) => t.paid).accepted;
+  assert.deepEqual([sent.network, sent.asset, sent.amount, sent.payTo], [TERMS.network, TERMS.asset, TERMS.amount_atomic, TERMS.pay_to]);
+});
+
+for (const [name, over, re] of [
+  ["pay_to", { payTo: "0x" + "ee".repeat(20) }, /pay_to differs/],
+  ["network", { network: "eip155:84532" }, /network differs/],
+  ["asset", { asset: "0x" + "99".repeat(20) }, /asset differs/],
+  ["amount above approved", { amount: "10001" }, /amount above approved/],
+]) {
+  test(`PAY STEP: 402 with a different ${name} -> refuse to sign, no spend, error carries reason + receipt URL`, async () => {
+    const w = world({ approve: TERMS, targetAccepts: [acc(over)] });
+    // the guard sits under the client, like wrapFetchWithPayment(spotCheckFetch(fetch), client)
+    const pay = fakeWrapFetchWithPayment(spotCheckFetch(w.fetch));
+    await assert.rejects(pay("https://good.test/api"), (e) => e instanceof SpotCheckBlockedError && re.test(e.message) && /refused to sign/.test(e.message) && e.receiptUrl.endsWith("/v1/receipts/sc-test") && e.message.includes(e.receiptUrl));
+    assert.equal(w.log.target.filter((t) => t.paid).length, 0);
+  });
+}
+
+test("PAY STEP: lower amount is fine; mixed 402 is narrowed to the requirement that fits", async () => {
+  const w = world({ approve: TERMS, targetAccepts: [acc({ amount: "9000" })] });
+  assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(w.fetch))("https://good.test/api")).status, 200);
+  const m = world({ approve: TERMS, targetAccepts: [acc({ payTo: "0x" + "ee".repeat(20) }), acc()] });
+  assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(m.fetch))("https://good.test/api")).status, 200);
+  assert.equal(m.log.target.find((t) => t.paid).accepted.payTo, TERMS.pay_to, "the client could only pick the approved requirement");
+});
+
+test("PAY STEP (free tier hash): matching terms pass, any change refuses to sign", async () => {
+  const ok = world({ hash: sha(TERMS) });
+  assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(ok.fetch))("https://good.test/api")).status, 200);
+  const bad = world({ hash: sha(TERMS), targetAccepts: [acc({ amount: "9000" })] });
+  await assert.rejects(fakeWrapFetchWithPayment(spotCheckFetch(bad.fetch))("https://good.test/api"), /terms differ from the approved payment/);
+  assert.equal(bad.log.target.filter((t) => t.paid).length, 0);
+});
+
+test("PAY STEP: skip = no signature (the 402 never reaches the client)", async () => {
+  const w = world({ verdicts: { "https://bad.test/api": ["skip", "pay_to_mismatch"] } });
+  let sawChallenge = false;
+  const client = async (i, init) => { const r = await spotCheckFetch(w.fetch)(i, init); if (r.status === 402) sawChallenge = true; return r; };
+  await assert.rejects(client("https://bad.test/api"), /pay_to_mismatch.*receipt: https:\/\/verified-catalog-lookup/);
+  assert.equal(sawChallenge, false);
+});
+
+test("PAY STEP: last-line check refuses a signed header that doesn't fit; assertApprovedPayment for self-signing agents", async () => {
+  const w = world({ approve: TERMS });
+  const g = spotCheckFetch(w.fetch);
+  const hdr = Buffer.from(JSON.stringify({ x402Version: 2, accepted: acc({ amount: "20000" }), payload: {} })).toString("base64");
+  await assert.rejects(g("https://good.test/api", { headers: { "PAYMENT-SIGNATURE": hdr } }), /refused to send: amount above approved/);
+  const d = await checkBeforePay("https://good.test/api", { fetch: w.fetch });
+  assert.equal(await assertApprovedPayment(d, acc()), true);
+  await assert.rejects(assertApprovedPayment(d, acc({ network: "eip155:1" })), /network differs/);
+  assert.equal(await termsMismatch(acc(), null), "");
 });
 
 let ok = 0;

@@ -5,7 +5,8 @@ export const challenge = (url) => ({
   x402Version: 2, error: "Payment required", resource: { url },
   accepts: [{ scheme: "exact", network: "eip155:8453", amount: "10000", asset: USDC, payTo: "0x" + "ab".repeat(20), maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" } }],
 });
-export function world({ verdicts = {}, spotStatus = 200, spotPrice = "10000" } = {}) {
+export const TERMS = { scheme: "exact", network: "eip155:8453", asset: USDC, asset_is_usdc: true, amount_atomic: "10000", amount_usd: 0.01, pay_to: "0x" + "ab".repeat(20) };
+export function world({ verdicts = {}, spotStatus = 200, spotPrice = "10000", approve = null, hash = null, targetAccepts = null, receipt = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/receipts/sc-test" } = {}) {
   const log = { spot: [], target: [], paidSpot: 0 };
   const b64 = (o) => Buffer.from(JSON.stringify(o)).toString("base64");
   const fetch = async (input, init = {}) => {
@@ -21,11 +22,12 @@ export function world({ verdicts = {}, spotStatus = 200, spotPrice = "10000" } =
       if (h.get("payment-signature")) log.paidSpot++;
       if (spotStatus >= 500) return new Response("down", { status: spotStatus });
       const v = verdicts[q.get("url")] || ["pay", "price_ok"];
-      return Response.json({ verdict: v[0], reason: v[1], access: { tier: "free" } });
+      const extra = v[0] === "pay" ? { payment: approve, payment_terms_sha256: hash } : { payment: null, payment_terms_sha256: null };
+      return Response.json({ verdict: v[0], reason: v[1], ...extra, receipt_url: receipt, access: { tier: approve ? "paid" : "free" } });
     }
     const paid = h.get("payment-signature") || h.get("x-payment");
-    log.target.push({ url, paid: !!paid, method: init.method || "GET" });
-    if (!paid) { const c = challenge(url); return new Response(JSON.stringify(c), { status: 402, headers: { "content-type": "application/json", "payment-required": b64(c) } }); }
+    log.target.push({ url, paid: !!paid, method: init.method || "GET", accepted: paid ? JSON.parse(Buffer.from(paid, "base64").toString()).accepted : null });
+    if (!paid) { const c = challenge(url); if (targetAccepts) c.accepts = targetAccepts; return new Response(JSON.stringify(c), { status: 402, headers: { "content-type": "application/json", "payment-required": b64(c) } }); }
     return Response.json({ ok: true, data: "paid content" });
   };
   return { fetch, log };

@@ -1,4 +1,5 @@
-export interface SpotDecision { url: string; verdict: "pay" | "skip" | "recheck" | "unavailable"; reason: string; allowed: boolean; checked: boolean; raw?: any }
+export interface ApprovedPayment { scheme: string; network: string; asset: string; asset_is_usdc: boolean | null; amount_atomic: string; amount_usd: number | null; pay_to: string }
+export interface SpotDecision { url: string; verdict: "pay" | "skip" | "recheck" | "unavailable"; reason: string; allowed: boolean; checked: boolean; raw?: any; approved: { payment: ApprovedPayment } | { sha256: string } | null; receiptUrl: string | null }
 export interface SpotCheckOptions {
   /** your client id (gets the free daily check; first-router ids get a 1,000-check pool) */
   client?: string;
@@ -19,7 +20,11 @@ export interface SpotCheckOptions {
   ref?: string;
   fetch?: typeof fetch;
 }
-export declare class SpotCheckBlockedError extends Error { decision: SpotDecision }
+export declare class SpotCheckBlockedError extends Error { decision: SpotDecision; reason: string; receiptUrl: string | null }
+export declare function termsString(t: any): string;
+export declare function termsMismatch(requirement: any, approved: SpotDecision["approved"]): Promise<string>;
+export declare function narrowRequirements(accepts: any[], approved: SpotDecision["approved"]): Promise<{ kept: any[]; reasons: string[] }>;
+export declare function assertApprovedPayment(decision: SpotDecision, requirement: any): Promise<true>;
 export declare const DEFAULT_ENDPOINT: string;
 export declare function spotCheckFetch<F extends (input: any, init?: any) => Promise<Response>>(fetchImpl?: F, opts?: SpotCheckOptions): F;
 export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions): A;

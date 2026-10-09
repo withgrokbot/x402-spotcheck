@@ -79,6 +79,32 @@ spotCheckFetch(fetch, {
 });
 ```
 
+## Pay step: sign only the approved payment
+
+Since 0.2.0 a `pay` verdict comes with the exact payment Spot-Check approved. It is taken from the target's live 402 and checked against the listing:
+
+```json
+"payment": { "scheme": "exact", "network": "eip155:8453", "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "asset_is_usdc": true, "amount_atomic": "1000", "amount_usd": 0.001, "pay_to": "0xf567Cfe0FDb87A1D6Ca330e3f30f0D3DA0F7cb98" }
+```
+
+That's the live answer for `https://api.402rates.com/v1/ping`. The free tier gets `payment_terms_sha256` instead of the terms: a sha256 of lower-case `network|asset|amount_atomic|pay_to`.
+
+The guard enforces those terms before your x402 client can sign anything:
+
+- **`skip` means no signature and no spend.** The 402 never reaches the client; `SpotCheckBlockedError` is thrown.
+- **The 402 is narrowed to the requirements that fit.** Network, asset and `pay_to` must be identical, and the amount must be at or below the approved one; on the free tier the terms hash must match. If nothing fits, it throws `refused to sign: pay_to differs (402 0x…, approved 0x…)`, or `network differs`, `asset differs`, `amount above approved`.
+- **A last check before sending.** If a signed `PAYMENT-SIGNATURE` still doesn't fit, it throws `refused to send: …`.
+
+```js
+try {
+  await pay(url);
+} catch (e) {
+  if (e instanceof SpotCheckBlockedError) console.log(e.reason, e.receiptUrl); // show as the abort reason
+}
+```
+
+Agents that sign payments themselves can call `assertApprovedPayment(await checkBeforePay(url), requirement)` first.
+
 ## Cost
 
 You get 1 free check per client per UTC day. After that a check costs one tenth of the target's quoted price, minimum $0.01, cap $0.25, in USDC on Base via x402. Pass `payFetch` to pay for checks with your own x402 client, capped by `maxCheckUsd` (default $0.05):
@@ -104,6 +130,8 @@ If you don't pass `payFetch` and the free check is used up, the guard counts Spo
 | `onDecision(d)` | none | log or meter every decision |
 | `cacheTtlMs` | `300000` | verdict cache per url and expectation |
 
+Errors: `SpotCheckBlockedError` has `decision` (verdict, reason, approved terms), `reason`, and `receiptUrl` (the public receipt for that check, when the Worker returns one).
+
 ## Agents and MCP
 
 Remote MCP server (free, Streamable HTTP): `https://verified-catalog-lookup.withgrokbot.workers.dev/mcp`, tool `endpoint_spot_check`. Add it to your MCP client, then put one line in the agent's instructions:
@@ -122,6 +150,6 @@ There are more examples in [examples/](examples/): Python, an MCP config, and a 
 
 ## Tests
 
-`npm test` runs unit tests with no network. `npm i && npm run test:integration` runs the real `@x402/fetch`, `@x402/axios` and `@x402/evm` (2.28) against a mock seller, signing locally with a throwaway key. (The v1 packages `x402-fetch` and `x402-axios` currently fail to install from npm because their `x402@^1.2.1` dependency can't be found, so they are covered only by the unit tests' `X-PAYMENT` path.) The integration test checks that a blocked payment header never leaves the process.
+`npm test` runs unit tests with no network, including the pay-step cases: matching, a different pay_to/network/asset, an amount above approved, a mixed 402 narrowed to one requirement, a free-tier hash, and skip. `npm i && npm run test:integration` runs the real `@x402/fetch`, `@x402/axios` and `@x402/evm` (2.28) against a mock seller, signing locally with a throwaway key. It counts every payload the client creates, to prove that a refused or skipped payment is never signed. (The v1 packages `x402-fetch` and `x402-axios` currently fail to install from npm because their `x402@^1.2.1` dependency can't be found, so they are covered only by the unit tests' `X-PAYMENT` path.) The integration test checks that a blocked payment header never leaves the process.
 
 MIT. Made by [@withgrokbot](https://github.com/withgrokbot). The Spot-Check service and the crawl live at [withgrokbot/verified-catalog](https://github.com/withgrokbot/verified-catalog).
