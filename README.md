@@ -66,9 +66,11 @@ So `pay(...)` throws `SpotCheckBlockedError` and nothing is signed onto the wire
 
 Spot-Check probes the target once (SSRF-safe, GET, or POST for POST requests) and never pays it. The verdict:
 
-- `pay`: the 402 parses, and its price, network and pay-to match what's expected.
-- `skip`: an error page with no 402 (e.g. 404), a price or network or pay-to that differs from the listing, unreachable, or timed out.
-- `recheck`: the challenge is there but unclear, or the target answered 2xx with no payment terms (`no_terms_seen`; `free_trial_active` when it sends `x-free-trial` headers). Blocked by default (`onRecheck`).
+- `pay`: the 402 parses, it asks for the canonical USDC on a supported mainnet, and its price, network and pay-to match what's expected.
+- `skip`: no paywall (no 402 terms at all), a price, network or pay-to that differs from the listing, a testnet or unsupported network, a token other than canonical USDC, or an unreadable 402.
+- `recheck`: only transient cases (timeout, network error, 5xx) and `free_trial_active` (the target sends `x-free-trial` headers). Blocked by default (`onRecheck`).
+
+Spot-Check reuses one probe per URL for 5 minutes, so two checks in a row agree.
 
 "Expected" means your own listing when you pass `expected`, otherwise the listing from our crawl (500 endpoints, refreshed weekly) when we have the URL:
 
