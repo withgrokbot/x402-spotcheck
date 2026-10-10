@@ -3,7 +3,7 @@
 Add the remote server (free, no key):
 
 ```json
-{ "mcpServers": { "payscout": { "url": "https://api.payscout.dev/mcp" } } }
+{ "mcpServers": { "402xagent": { "url": "https://api.402xagent.com/mcp" } } }
 ```
 
 Then put this in the agent's system prompt:

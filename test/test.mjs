@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spotCheckFetch, spotCheckAxios, checkBeforePay, readPaymentIntent, SpotCheckBlockedError, createSpotChecker } from "../index.js";
 import { world, fakeWrapFetchWithPayment, TERMS, USDC } from "./mock.mjs";
 import { createHash } from "node:crypto";
-import { termsString, termsMismatch, assertApprovedPayment } from "../index.js";
+import { termsString, termsMismatch, assertApprovedPayment, DEFAULT_ENDPOINT } from "../index.js";
 const sha = (t) => createHash("sha256").update(termsString(t)).digest("hex");
 const acc = (o = {}) => ({ scheme: "exact", network: "eip155:8453", amount: "10000", asset: USDC, payTo: "0x" + "ab".repeat(20), maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" }, ...o });
 
@@ -147,6 +147,20 @@ test("PAY STEP: last-line check refuses a signed header that doesn't fit; assert
   assert.equal(await assertApprovedPayment(d, acc()), true);
   await assert.rejects(assertApprovedPayment(d, acc({ network: "eip155:1" })), /network differs/);
   assert.equal(await termsMismatch(acc(), null), "");
+});
+
+test("0.4.0: default host is api.402xagent.com; every earlier host is still recognised as the check itself (never guarded)", async () => {
+  assert.equal(DEFAULT_ENDPOINT, "https://api.402xagent.com/v1/products/endpoint-spot-check");
+  const seen = [];
+  const inner = async (input, init) => { seen.push(String(input)); return new Response("{}", { status: 200, headers: { "content-type": "application/json" } }); };
+  const g = spotCheckFetch(inner);
+  const hdr = Buffer.from(JSON.stringify({ x402Version: 2, accepted: acc(), payload: {} })).toString("base64");
+  for (const h of ["https://api.402xagent.com", "https://402xagent.com", "https://api.payscout.dev", "https://payscout.dev", "https://verified-catalog-lookup.withgrokbot.workers.dev"]) {
+    const u = h + "/v1/products/endpoint-spot-check?url=https%3A%2F%2Fx.test";
+    seen.length = 0;
+    await g(u, { headers: { "PAYMENT-SIGNATURE": hdr } });
+    assert.deepEqual(seen, [u], "a paid call to the check itself passes straight through: " + h);
+  }
 });
 
 let ok = 0;

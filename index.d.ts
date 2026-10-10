@@ -3,13 +3,13 @@ export interface SpotDecision { url: string; verdict: "pay" | "skip" | "recheck"
 export interface SpotCheckOptions {
   /** your client id (gets the free daily check; first-router ids get a 1,000-check pool) */
   client?: string;
-  /** a fetch that can pay PayScout's own x402 price, e.g. wrapFetchWithPayment(fetch, client) */
+  /** a fetch that can pay 402xAgent's own x402 price, e.g. wrapFetchWithPayment(fetch, client) */
   payFetch?: (input: any, init?: any) => Promise<Response>;
   /** max USD to pay for one check (default 0.05) */
   maxCheckUsd?: number;
   /** what to do on verdict "recheck" (default "block") */
   onRecheck?: "block" | "allow";
-  /** what to do when PayScout cannot answer (default "allow" so an outage never stops your payments) */
+  /** what to do when 402xAgent cannot answer (default "allow" so an outage never stops your payments) */
   onUnavailable?: "allow" | "block";
   /** your listing for this URL: the price / payTo / network you expect */
   expected?: (url: string, intent: { network: string | null; payTo: string | null; priceUsd: number | null } | null) => { price?: number; payTo?: string; network?: string } | undefined | Promise<{ price?: number; payTo?: string; network?: string } | undefined>;
