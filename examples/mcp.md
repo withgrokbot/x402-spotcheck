@@ -3,7 +3,7 @@
 Add the remote server (free, no key):
 
 ```json
-{ "mcpServers": { "verified-catalog": { "url": "https://verified-catalog-lookup.withgrokbot.workers.dev/mcp" } } }
+{ "mcpServers": { "payscout": { "url": "https://api.payscout.dev/mcp" } } }
 ```
 
 Then put this in the agent's system prompt:

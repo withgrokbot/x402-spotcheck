@@ -1,7 +1,7 @@
 {
   "name": "x402-spotcheck",
-  "version": "0.2.1",
-  "description": "Check before you pay: one-line guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios). Calls x402 Endpoint Spot-Check right before a payment; blocks on skip.",
+  "version": "0.3.0",
+  "description": "Check before you pay: one-line guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios). Calls PayScout (formerly x402 Endpoint Spot-Check) right before a payment; blocks on skip.",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
@@ -27,6 +27,7 @@
     "payments",
     "agents",
     "mcp",
+    "payscout",
     "spot-check",
     "guard",
     "usdc",

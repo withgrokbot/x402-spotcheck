@@ -1,9 +1,13 @@
 // x402-spotcheck: check before you pay. Drop-in guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios).
-// Right before your client sends a payment, it asks Spot-Check about the target; skip blocks the payment,
+// Right before your client sends a payment, it asks PayScout (formerly Spot-Check) about the target; skip blocks the payment,
 // pay lets it through, recheck is configurable (default: block). It never sees or holds your keys.
 
 export const DEFAULT_REF = "via-x402-spotcheck"; // attribution only; integrators set their own (e.g. via-cdp)
-export const DEFAULT_ENDPOINT = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/products/endpoint-spot-check";
+// 0.3.0: PayScout (formerly Spot-Check) lives on api.payscout.dev. The old host serves the same Worker and stays valid
+// (pass it as `endpoint` to keep using it); both are recognised as the check itself, never guarded.
+export const DEFAULT_ENDPOINT = "https://api.payscout.dev/v1/products/endpoint-spot-check";
+export const LEGACY_ENDPOINT = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/products/endpoint-spot-check";
+const KNOWN_ENDPOINTS = [DEFAULT_ENDPOINT, LEGACY_ENDPOINT, "https://payscout.dev/v1/products/endpoint-spot-check"];
 const PAY_HEADERS = ["payment-signature", "x-payment"];
 const USDC = new Set(["0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "0x036cbd53842c5426634e7929541ec2318f3dcf7e"]);
 
@@ -18,7 +22,7 @@ export class SpotCheckBlockedError extends Error {
 }
 
 // ---------------------------------------------------------------- PAY STEP (0.2.0)
-// Spot-Check approves one exact payment (paid tier: the terms; free tier: a sha256 of them). Before the x402
+// PayScout approves one exact payment (paid tier: the terms; free tier: a sha256 of them). Before the x402
 // client signs, the target's 402 is narrowed to the requirements that fit those terms; none left = no signature.
 const lc = (v) => String(v ?? "").toLowerCase();
 async function sha256hex(text) {
@@ -122,7 +126,7 @@ export function createSpotChecker(opts = {}) {
     try {
       let r = await base(u, { headers: { accept: "application/json" }, signal: ac.signal });
       if (r.status === 402) {
-        // Spot-Check's own price: 1/10 of the target's quote, $0.01-$0.25. Pay only within maxCheckUsd.
+        // PayScout's own price: 1/10 of the target's quote, $0.01-$0.25. Pay only within maxCheckUsd.
         const req = b64json(r.headers.get("payment-required") || "") || (await r.json().catch(() => ({})));
         const amt = Number(((req.accepts || [])[0] || {}).amount);
         if (!payFetch || !(amt / 1e6 <= maxCheckUsd)) return { unavailable: "spot-check needs payment" + (payFetch ? ` above maxCheckUsd ($${amt / 1e6})` : " (no payFetch given)") };
@@ -193,7 +197,8 @@ async function guard402(res, url, method, check) {
 }
 
 function isSpotCheck(url, opts) {
-  return String(url).startsWith(opts.endpoint || DEFAULT_ENDPOINT);
+  const u = String(url);
+  return [opts.endpoint, ...KNOWN_ENDPOINTS].some((e) => e && u.startsWith(e));
 }
 
 /**

@@ -2,7 +2,7 @@
 
 ```python
 import requests
-SPOT = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/products/endpoint-spot-check"
+SPOT = "https://api.payscout.dev/v1/products/endpoint-spot-check"  # the old verified-catalog-lookup host still works
 
 def check_before_pay(url, client="my-agent", price=None, pay_to=None, network=None, method="GET"):
     q = {"url": url, "client": client, "ref": "via-x402-spotcheck-py", "method": method}

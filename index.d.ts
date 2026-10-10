@@ -3,13 +3,13 @@ export interface SpotDecision { url: string; verdict: "pay" | "skip" | "recheck"
 export interface SpotCheckOptions {
   /** your client id (gets the free daily check; first-router ids get a 1,000-check pool) */
   client?: string;
-  /** a fetch that can pay Spot-Check's own x402 price, e.g. wrapFetchWithPayment(fetch, client) */
+  /** a fetch that can pay PayScout's own x402 price, e.g. wrapFetchWithPayment(fetch, client) */
   payFetch?: (input: any, init?: any) => Promise<Response>;
   /** max USD to pay for one check (default 0.05) */
   maxCheckUsd?: number;
   /** what to do on verdict "recheck" (default "block") */
   onRecheck?: "block" | "allow";
-  /** what to do when Spot-Check cannot answer (default "allow" so an outage never stops your payments) */
+  /** what to do when PayScout cannot answer (default "allow" so an outage never stops your payments) */
   onUnavailable?: "allow" | "block";
   /** your listing for this URL: the price / payTo / network you expect */
   expected?: (url: string, intent: { network: string | null; payTo: string | null; priceUsd: number | null } | null) => { price?: number; payTo?: string; network?: string } | undefined | Promise<{ price?: number; payTo?: string; network?: string } | undefined>;
@@ -26,6 +26,8 @@ export declare function termsMismatch(requirement: any, approved: SpotDecision["
 export declare function narrowRequirements(accepts: any[], approved: SpotDecision["approved"]): Promise<{ kept: any[]; reasons: string[] }>;
 export declare function assertApprovedPayment(decision: SpotDecision, requirement: any): Promise<true>;
 export declare const DEFAULT_ENDPOINT: string;
+/** the pre-0.3.0 default (same service, still valid) */
+export declare const LEGACY_ENDPOINT: string;
 export declare const DEFAULT_REF: string;
 export declare function spotCheckFetch<F extends (input: any, init?: any) => Promise<Response>>(fetchImpl?: F, opts?: SpotCheckOptions): F;
 export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions): A;
