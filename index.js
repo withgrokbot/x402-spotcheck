@@ -1,9 +1,9 @@
 // x402-spotcheck: check before you pay. Drop-in guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios).
-// Right before your client sends a payment, it asks 402xAgent (formerly Spot-Check) about the target; skip blocks the payment,
+// Right before your client sends a payment, it asks 402xAgent about the target; skip blocks the payment,
 // pay lets it through, recheck is configurable (default: block). It never sees or holds your keys.
 
 export const DEFAULT_REF = "via-x402-spotcheck"; // attribution only; integrators set their own (e.g. via-cdp)
-// 0.4.0: 402xAgent (formerly Spot-Check) lives on api.402xagent.com. Every earlier host serves the same Worker and stays
+// 0.4.0: 402xAgent lives on api.402xagent.com. Every earlier host serves the same Worker and stays
 // valid (pass it as `endpoint` to keep using it); all of them are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
 export const LEGACY_ENDPOINT = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/products/endpoint-spot-check";
@@ -135,13 +135,13 @@ export function createSpotChecker(opts = {}) {
         // 402xAgent's own price: 1/10 of the target's quote, $0.01-$0.25. Pay only within maxCheckUsd.
         const req = b64json(r.headers.get("payment-required") || "") || (await r.json().catch(() => ({})));
         const amt = Number(((req.accepts || [])[0] || {}).amount);
-        if (!payFetch || !(amt / 1e6 <= maxCheckUsd)) return { unavailable: "spot-check needs payment" + (payFetch ? ` above maxCheckUsd ($${amt / 1e6})` : " (no payFetch given)") };
+        if (!payFetch || !(amt / 1e6 <= maxCheckUsd)) return { unavailable: "402xAgent check needs payment" + (payFetch ? ` above maxCheckUsd ($${amt / 1e6})` : " (no payFetch given)") };
         r = await payFetch(u, { headers: { accept: "application/json" } });
       }
-      if (r.status !== 200) return { unavailable: "spot-check HTTP " + r.status };
+      if (r.status !== 200) return { unavailable: "402xAgent check HTTP " + r.status };
       return { body: await r.json() };
     } catch (e) {
-      return { unavailable: "spot-check unreachable: " + (e && e.name === "AbortError" ? "timeout" : String((e && e.message) || e)) };
+      return { unavailable: "402xAgent check unreachable: " + (e && e.name === "AbortError" ? "timeout" : String((e && e.message) || e)) };
     } finally {
       clearTimeout(timer);
     }

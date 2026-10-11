@@ -1,7 +1,7 @@
 # x402-spotcheck: check before you pay
 
 A one-line guard for x402 clients. Right before your client sends a payment, it asks
-[402xAgent](https://402xagent.com) (formerly x402 Endpoint Spot-Check)
+[402xAgent](https://402xagent.com)
 whether the target's live 402 matches what you expect. It returns `skip` (blocked), `pay` (sent), or `recheck` (blocked by default, configurable).
 
 It never sees your keys. It reads the payment header your client already built, and when a check says skip, that header is never sent.
