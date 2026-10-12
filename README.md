@@ -123,6 +123,41 @@ If you don't pass `payFetch` and the free check is used up, the guard counts 402
 
 Routers: ask for a router client id and checks cost $0.001 each. They're billed as one $0.01 x402 payment per 10-check pack, and the other 9 are prepaid on that id. A router tier is needed because the facilitator charges about $0.002 per settlement, so a $0.001 payment per check would not cover it.
 
+## Verify a Bazaar result before paying (paid check)
+
+[402xagent.com/bazaar](https://402xagent.com/bazaar) shows a daily free check of top [CDP Bazaar](https://docs.cdp.coinbase.com/x402/bazaar) results. That is a snapshot. Before your agent pays one, run its own check against what Bazaar lists, then re-fetch the live 402 and sign only if it still fits. With `payFetch`, the check is the paid tier (full approved terms; same price as above, capped by `maxCheckUsd`):
+
+```js
+import { checkBeforePay, assertApprovedPayment } from "x402-spotcheck";
+
+// 1. Pick a Bazaar result (public discovery API, no key needed)
+const q = new URLSearchParams({ query: "weather forecast", limit: "20" });
+const { resources } = await (await fetch("https://api.cdp.coinbase.com/platform/v2/x402/discovery/search?" + q)).json();
+const r = resources[0];
+const listed = r.accepts.find((a) => a.network === "eip155:8453") || r.accepts[0];
+const method = r.extensions?.bazaar?.info?.input?.method || "GET";
+
+// 2. Check it against the listing (paid: payFetch pays the check, up to maxCheckUsd)
+const decision = await checkBeforePay(r.resource, {
+  method,
+  price: Number(listed.amount) / 1e6, // USDC has 6 decimals
+  payTo: listed.payTo,
+  network: listed.network,
+  payFetch: wrapFetchWithPayment(fetch, client),
+  maxCheckUsd: 0.05,
+});
+if (!decision.allowed) throw new Error(`skip: ${decision.reason}`); // no signature, no spend
+
+// 3. Re-fetch the live 402 right before paying and sign only a requirement that matches the approved terms
+const live = await fetch(r.resource, { method });
+if (live.status !== 402) throw new Error(`no live 402 (HTTP ${live.status}); recheck later`);
+const pr = live.headers.get("payment-required"); // x402 v2 header, else v1 body
+const { accepts } = pr ? JSON.parse(atob(pr)) : await live.json();
+const requirement = accepts.find((a) => a.network === decision.approved?.payment?.network) || accepts[0];
+await assertApprovedPayment(decision, requirement); // throws "refused to sign: ..." if terms changed since the check
+// ...now pay with your x402 client
+```
+
 ## Options
 
 | option | default | |
