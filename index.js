@@ -36,8 +36,13 @@ async function sha256hex(text) {
   const buf = await subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+// 0.5.0: matches the Worker's termsSha256 (since Worker 0.23.1): the network is always lower-cased; EVM asset/pay_to are
+// lower-cased (Base hashes unchanged); Solana mint/pay_to are base58, case-sensitive, and hashed as-is.
+const isSol = (n) => /^solana(:|-|$)/i.test(String(n ?? ""));
+const addrKey = (network) => (isSol(network) ? (v) => String(v ?? "") : lc);
 export function termsString(t) {
-  return [lc(t.network), lc(t.asset), String(t.amount_atomic ?? t.amount ?? t.maxAmountRequired), lc(t.pay_to ?? t.payTo)].join("|");
+  const a = addrKey(t.network);
+  return [lc(t.network), a(t.asset), String(t.amount_atomic ?? t.amount ?? t.maxAmountRequired), a(t.pay_to ?? t.payTo)].join("|");
 }
 const reqAmount = (r) => String(r.amount ?? r.maxAmountRequired ?? "");
 /** Why a 402 requirement does not fit the approved terms ("" = it fits). */
@@ -46,8 +51,9 @@ export async function termsMismatch(req, approved) {
   if (approved.payment) {
     const p = approved.payment;
     if (lc(req.network) !== lc(p.network)) return `network differs (402 ${req.network}, approved ${p.network})`;
-    if (lc(req.asset) !== lc(p.asset)) return `asset differs (402 ${req.asset}, approved ${p.asset})`;
-    if (lc(req.payTo) !== lc(p.pay_to)) return `pay_to differs (402 ${req.payTo}, approved ${p.pay_to})`;
+    const a = addrKey(p.network); // Solana base58 compares case-sensitively, as in the Worker
+    if (a(req.asset) !== a(p.asset)) return `asset differs (402 ${req.asset}, approved ${p.asset})`;
+    if (a(req.payTo) !== a(p.pay_to)) return `pay_to differs (402 ${req.payTo}, approved ${p.pay_to})`;
     if (!/^\d+$/.test(reqAmount(req)) || BigInt(reqAmount(req)) > BigInt(p.amount_atomic)) return `amount above approved (402 ${reqAmount(req)}, approved ${p.amount_atomic} atomic)`;
     return "";
   }
@@ -113,6 +119,117 @@ function headerOf(headers, name) {
   return null;
 }
 
+// ---------------------------------------------------------------- AUTO-PAY THE CHECK (0.5.0, opt-in)
+// autoPayCheck: { wrapFetch, maxPerCheck, dailyCap, maxFraction?, spendStore? }. Off unless set. When the free check is
+// used up (402xAgent answers 402), the check fee is paid with the same x402 client BEFORE the seller, only if every rule
+// holds; any failure = the old behaviour (the check counts as unavailable). Amounts are USDC atomic units (6 decimals).
+// The documented 402xAgent fee terms (Worker cfg/paymentRequirements): x402 v2, exact, USDC on Base, this pay_to.
+export const CHECK_FEE_TERMS = Object.freeze({
+  scheme: "exact",
+  network: "eip155:8453",
+  asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  payTo: "0x37cfCC8a29e9ff9458902B29E31E42dc7B718674",
+  minAtomic: 10000, // $0.01
+  maxAtomic: 250000, // $0.25
+});
+// USDC (6 decimals) per mainnet the target may quote in; Solana mints are case-sensitive.
+const TARGET_USDC = { "eip155:8453": (a) => lc(a) === lc(CHECK_FEE_TERMS.asset), "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": (a) => a === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" };
+const MAX_FRACTION = 0.25;
+const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
+const usdToAtomic = (v) => Math.floor(Number(v) * 1e6 + 1e-6);
+/** Expected 402xAgent fee for a target quote (atomic): 1/10, $0.01 min, $0.25 cap, as the Worker computes it. */
+export function expectedCheckFee(targetAtomic) {
+  const q = Number(targetAtomic);
+  const a = Number.isFinite(q) && q > 0 ? Math.round(q / 10) : CHECK_FEE_TERMS.minAtomic;
+  return Math.min(CHECK_FEE_TERMS.maxAtomic, Math.max(CHECK_FEE_TERMS.minAtomic, a));
+}
+function targetQuotes(target) {
+  const out = [];
+  for (const a of (target && Array.isArray(target.accepts) ? target.accepts : [])) {
+    const n = String((a && a.network) || "");
+    const net = /^solana:/i.test(n) ? n : lc(n);
+    const amt = String(a && (a.amount ?? a.maxAmountRequired) || "");
+    if (TARGET_USDC[net] && TARGET_USDC[net](String(a.asset || "")) && /^\d{1,15}$/.test(amt) && Number(amt) > 0) out.push(Number(amt));
+  }
+  return out;
+}
+const isFeeAccept = (a, amount) => !!a && a.scheme === CHECK_FEE_TERMS.scheme && a.network === CHECK_FEE_TERMS.network
+  && lc(a.asset) === lc(CHECK_FEE_TERMS.asset) && lc(a.payTo) === lc(CHECK_FEE_TERMS.payTo)
+  && /^\d{1,15}$/.test(String(a.amount)) && (amount == null || String(a.amount) === String(amount));
+
+function makeAutoPay(cfg, base) {
+  const maxPer = usdToAtomic(cfg.maxPerCheck), cap = usdToAtomic(cfg.dailyCap);
+  const frac = cfg.maxFraction == null ? MAX_FRACTION : Number(cfg.maxFraction);
+  if (typeof cfg.wrapFetch !== "function") throw new TypeError("autoPayCheck.wrapFetch is required, e.g. (f) => wrapFetchWithPayment(f, client)");
+  if (!(maxPer > 0) || !(cap > 0)) throw new TypeError("autoPayCheck.maxPerCheck and dailyCap must be positive USD amounts");
+  if (!(frac > 0 && frac <= MAX_FRACTION)) throw new TypeError(`autoPayCheck.maxFraction must be > 0 and <= ${MAX_FRACTION}`);
+  const store = cfg.spendStore || null; // optional persistence: { get(day) -> atomic, add(day, atomic) }
+  const spent = new Map(); // day -> atomic, in-process, includes in-flight reservations
+
+  async function pay(u, r402, target, signal) {
+    let reserved = 0, day = utcDay(), sent = false;
+    try {
+      const pr = b64json(r402.headers.get("payment-required") || "") || (await r402.json().catch(() => null));
+      if (!pr || pr.x402Version !== 2 || !Array.isArray(pr.accepts)) return { why: "unreadable or non-v2 402" };
+      const acc = pr.accepts.find((a) => isFeeAccept(a));
+      if (!acc) return { why: "402 terms are not the documented 402xAgent pay_to/asset/network" };
+      const fee = Number(acc.amount);
+      const quotes = targetQuotes(target);
+      if (!quotes.length) return { why: "target price unknown (needs a USDC quote on Base or Solana)" };
+      if (fee < CHECK_FEE_TERMS.minAtomic || fee > CHECK_FEE_TERMS.maxAtomic || !quotes.some((q) => Math.abs(fee - expectedCheckFee(q)) <= 1)) return { why: `fee ${fee} is not 1/10 of the target price` };
+      if (fee > maxPer) return { why: `fee ${fee} above maxPerCheck` };
+      if (fee > Math.min(...quotes) * frac) return { why: `fee ${fee} above ${frac} of the target price` };
+      let persisted = 0;
+      if (store && typeof store.get === "function") {
+        persisted = Number(await store.get(day));
+        if (!Number.isFinite(persisted) || persisted < 0) return { why: "spendStore.get returned an invalid amount" };
+      }
+      day = utcDay(); // re-read after the await; reserve synchronously so concurrent checks can't both pass
+      const today = Math.max(spent.get(day) || 0, persisted);
+      if (fee + today > cap) return { why: `fee ${fee} would exceed dailyCap (spent ${today})` };
+      spent.set(day, (spent.get(day) || 0) + fee);
+      reserved = fee;
+
+      // The client's fetch: only the validated fee, to this URL, once. Anything else throws before a signature leaves.
+      const inner = async (input, init = {}) => {
+        const isReq = typeof Request !== "undefined" && input instanceof Request;
+        const url = isReq ? input.url : String(input);
+        if (url !== u) throw new Error("autoPayCheck: unexpected URL");
+        let ph = null;
+        for (const h of PAY_HEADERS) ph = ph || headerOf(init.headers, h) || (isReq ? input.headers.get(h) : null);
+        if (ph) {
+          if (sent) throw new Error("autoPayCheck: second payment refused");
+          const p = b64json(ph), a = p && p.accepted, auth = (p && p.payload && p.payload.authorization) || null;
+          if (!a || !isFeeAccept(a, acc.amount)) throw new Error("autoPayCheck: signed payment differs from the validated fee");
+          if (auth && (String(auth.value) !== String(acc.amount) || lc(auth.to) !== lc(CHECK_FEE_TERMS.payTo))) throw new Error("autoPayCheck: signed authorization differs from the validated fee");
+          sent = true;
+          return base(input, init);
+        }
+        const res = await base(input, init);
+        if (res.status !== 402) return res;
+        const fresh = b64json(res.headers.get("payment-required") || "") || (await res.clone().json().catch(() => null));
+        const keep = fresh && Array.isArray(fresh.accepts) ? fresh.accepts.filter((a) => isFeeAccept(a, acc.amount)) : [];
+        if (!keep.length) throw new Error("autoPayCheck: fee terms changed between probes");
+        const narrowed = { ...fresh, accepts: [keep[0]] };
+        const headers = new Headers(res.headers);
+        headers.set("payment-required", encodeB64Json(narrowed));
+        return new Response(JSON.stringify(narrowed), { status: 402, headers });
+      };
+      const res = await cfg.wrapFetch(inner)(u, { headers: { accept: "application/json" }, signal });
+      if (res && res.status === 200) return { res };
+      return { why: "paid check HTTP " + (res && res.status) };
+    } catch (e) {
+      return { why: String((e && e.message) || e).slice(0, 200) };
+    } finally {
+      if (reserved && !sent) spent.set(day, Math.max(0, (spent.get(day) || 0) - reserved)); // nothing signed left: release
+      if (sent && store && typeof store.add === "function") {
+        try { await store.add(day, reserved); } catch { /* the in-process total still counts it */ }
+      }
+    }
+  }
+  return { pay, spentToday: () => spent.get(utcDay()) || 0 };
+}
+
 /**
  * Core check. Returns { url, verdict, reason, allowed, checked, raw }.
  * opts: client, endpoint, payFetch, maxCheckUsd, onRecheck ("block"|"allow"), onUnavailable ("allow"|"block"),
@@ -125,13 +242,20 @@ export function createSpotChecker(opts = {}) {
   const ttl = opts.cacheTtlMs ?? 5 * 60 * 1000;
   const cache = new Map();
 
-  async function ask(qs, payFetch) {
+  const auto = opts.autoPayCheck ? makeAutoPay(opts.autoPayCheck, base) : null;
+
+  async function ask(qs, payFetch, target) {
     const u = endpoint + "?" + qs.toString();
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 15000);
     try {
       let r = await base(u, { headers: { accept: "application/json" }, signal: ac.signal });
-      if (r.status === 402) {
+      if (r.status === 402 && auto) {
+        // 0.5.0 autoPayCheck: pay the check fee within the caps, else the same "unavailable" as without a payFetch.
+        const paid = await auto.pay(u, r, target, ac.signal);
+        if (!paid.res) return { unavailable: "402xAgent check needs payment (autoPayCheck declined: " + paid.why + ")" };
+        r = paid.res;
+      } else if (r.status === 402) {
         // 402xAgent's own price: 1/10 of the target's quote, $0.01-$0.25. Pay only within maxCheckUsd.
         const req = b64json(r.headers.get("payment-required") || "") || (await r.json().catch(() => ({})));
         const amt = Number(((req.accepts || [])[0] || {}).amount);
@@ -147,7 +271,7 @@ export function createSpotChecker(opts = {}) {
     }
   }
 
-  return async function check(url, { method = "GET", intent = null } = {}) {
+  return async function check(url, { method = "GET", intent = null, target = null } = {}) {
     const exp = (opts.expected && (await opts.expected(url, intent))) || {};
     const qs = new URLSearchParams({ url: String(url) });
     if (opts.client) qs.set("client", opts.client);
@@ -162,7 +286,7 @@ export function createSpotChecker(opts = {}) {
     let res;
     if (hit && hit.at > Date.now() - ttl) res = hit.res;
     else {
-      res = await ask(qs, opts.payFetch);
+      res = await ask(qs, opts.payFetch, target);
       if (!res.unavailable) cache.set(key, { at: Date.now(), res });
     }
     let d;
@@ -187,7 +311,7 @@ async function guard402(res, url, method, check) {
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = null; }
-  const d = await check(url, { method });
+  const d = await check(url, { method, target: fromHdr || body });
   if (!d.allowed) throw new SpotCheckBlockedError(d);
   const rebuilt = (h, b) => {
     const headers = new Headers(res.headers);
@@ -223,9 +347,9 @@ export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
     if (isSpotCheck(url, opts)) return fetchImpl(input, init);
     if (pay) {
       // Last line: the signed payment must still fit the approved terms (cached check, no extra call).
-      const d = await check(url, { method, intent: readPaymentIntent(pay) });
-      if (!d.allowed) throw new SpotCheckBlockedError(d);
       const p = b64json(pay);
+      const d = await check(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null });
+      if (!d.allowed) throw new SpotCheckBlockedError(d);
       const why = p && p.accepted ? await termsMismatch(p.accepted, d.approved) : "";
       if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);
       return fetchImpl(input, init);
@@ -252,9 +376,9 @@ export function spotCheckAxios(instance, opts = {}) {
     if (!pay) return config;
     const full = fullUrl(config);
     if (isSpotCheck(full, opts)) return config;
-    const d = await check(full, { method: (config.method || "GET").toUpperCase(), intent: readPaymentIntent(pay) });
-    if (!d.allowed) throw new SpotCheckBlockedError(d);
     const p = b64json(pay);
+    const d = await check(full, { method: (config.method || "GET").toUpperCase(), intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null });
+    if (!d.allowed) throw new SpotCheckBlockedError(d);
     const why = p && p.accepted ? await termsMismatch(p.accepted, d.approved) : "";
     if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);
     return config;
@@ -268,13 +392,13 @@ export function spotCheckAxios(instance, opts = {}) {
     for (const h of PAY_HEADERS) pay = pay || headerOf(config.headers, h);
     const full = fullUrl(config);
     if (pay || isSpotCheck(full, opts)) throw error;
-    const d = await check(full, { method: (config.method || "GET").toUpperCase() });
-    if (!d.allowed) throw new SpotCheckBlockedError(d);
-    if (!d.approved) throw error;
     const hkey = Object.keys(res.headers || {}).find((k) => k.toLowerCase() === "payment-required");
     const fromHdr = hkey ? b64json(res.headers[hkey]) : null;
     const body = typeof res.data === "string" ? (() => { try { return JSON.parse(res.data); } catch { return null; } })() : res.data;
     const pr = fromHdr || body;
+    const d = await check(full, { method: (config.method || "GET").toUpperCase(), target: pr });
+    if (!d.allowed) throw new SpotCheckBlockedError(d);
+    if (!d.approved) throw error;
     if (!pr || !Array.isArray(pr.accepts)) throw new SpotCheckBlockedError(d, "refused to sign: unreadable 402");
     const { kept, reasons } = await narrowRequirements(pr.accepts, d.approved);
     if (!kept.length) throw new SpotCheckBlockedError(d, "refused to sign: " + (reasons[0] || "no requirement fits the approved payment"));
@@ -288,7 +412,7 @@ export function spotCheckAxios(instance, opts = {}) {
 /** Plain function for agents/MCP tools: await checkBeforePay(url, { price, payTo, network, client }). */
 export async function checkBeforePay(url, o = {}) {
   const check = createSpotChecker({ ...o, expected: () => ({ price: o.price, payTo: o.payTo, network: o.network }) });
-  return check(url, { method: o.method || "GET" });
+  return check(url, { method: o.method || "GET", target: o.accepts ? { accepts: o.accepts } : null });
 }
 
 /** For agents that sign themselves: throws SpotCheckBlockedError unless `requirement` (one 402 accepts entry) fits. */

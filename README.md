@@ -89,7 +89,7 @@ Since 0.2.0 a `pay` verdict comes with the exact payment 402xAgent approved. It 
 "payment": { "scheme": "exact", "network": "eip155:8453", "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "asset_is_usdc": true, "amount_atomic": "1000", "amount_usd": 0.001, "pay_to": "0xf567Cfe0FDb87A1D6Ca330e3f30f0D3DA0F7cb98" }
 ```
 
-That's the live answer for `https://api.402rates.com/v1/ping`. The free tier gets `payment_terms_sha256` instead of the terms: a sha256 of lower-case `network|asset|amount_atomic|pay_to`.
+That's the live answer for `https://api.402rates.com/v1/ping`. The free tier gets `payment_terms_sha256` instead of the terms: a sha256 of `network|asset|amount_atomic|pay_to`, with the network lower-cased, EVM asset and pay_to lower-cased, and Solana mint and pay_to kept as-is (base58 is case-sensitive; since 0.5.0, matching the Worker).
 
 The guard enforces those terms before your x402 client can sign anything:
 
@@ -196,3 +196,17 @@ There are more examples in [examples/](examples/): Python, an MCP config, and a 
 `npm test` runs unit tests with no network, including the pay-step cases: matching, a different pay_to/network/asset, an amount above approved, a mixed 402 narrowed to one requirement, a free-tier hash, and skip. `npm i && npm run test:integration` runs the real `@x402/fetch`, `@x402/axios` and `@x402/evm` (2.28) against a mock seller, signing locally with a throwaway key. It counts every payload the client creates, to prove that a refused or skipped payment is never signed. (The v1 packages `x402-fetch` and `x402-axios` currently fail to install from npm because their `x402@^1.2.1` dependency can't be found, so they are covered only by the unit tests' `X-PAYMENT` path.) The integration test checks that a blocked payment header never leaves the process.
 
 MIT. Made by [@withgrokbot](https://github.com/withgrokbot). The 402xAgent service and the crawl live at [withgrokbot/verified-catalog](https://github.com/withgrokbot/verified-catalog).
+
+### Auto-pay the check (opt-in, 0.5.0)
+
+When the free check is used up, `autoPayCheck` pays the 402xAgent fee with the same x402 client, before it pays the seller:
+
+```js
+const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
+  client: "my-router",
+  autoPayCheck: { wrapFetch: (f) => wrapFetchWithPayment(f, client), maxPerCheck: 0.05, dailyCap: 1 },
+}), client);
+```
+
+It pays only when all of these hold: the fee is at most `maxPerCheck`; the fee plus today's spend (UTC, per instance) is at most `dailyCap`; the fee is at most 25% of the target's price (`maxFraction` can set a lower limit, not a higher one); the fee is exactly 1/10 of the target's USDC price ($0.01 to $0.25); and the 402 asks for x402 v2 `exact` USDC on Base to 402xAgent's documented pay_to. The fee is always paid on Base, including for Solana targets, so the client needs an EVM signer registered. Your fetch wrapper can sign only that one payment, once. To share the daily total across restarts, pass `spendStore: { get(day), add(day, atomic) }`. If any rule fails or anything errors, the check counts as unavailable, the same as without it. With `autoPayCheck` set, `payFetch` is not used for the fee. Without `autoPayCheck`, nothing changes.
+

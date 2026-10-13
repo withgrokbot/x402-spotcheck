@@ -1,5 +1,19 @@
 export interface ApprovedPayment { scheme: string; network: string; asset: string; asset_is_usdc: boolean | null; amount_atomic: string; amount_usd: number | null; pay_to: string }
 export interface SpotDecision { url: string; verdict: "pay" | "skip" | "recheck" | "unavailable"; reason: string; allowed: boolean; checked: boolean; raw?: any; approved: { payment: ApprovedPayment } | { sha256: string } | null; receiptUrl: string | null }
+export interface AutoPayCheckOptions {
+  /** wraps a fetch with your x402 client, e.g. (f) => wrapFetchWithPayment(f, client) */
+  wrapFetch: (f: (input: any, init?: any) => Promise<Response>) => (input: any, init?: any) => Promise<Response>;
+  /** max USD for one check */
+  maxPerCheck: number;
+  /** max USD per UTC day (this instance, plus spendStore if given) */
+  dailyCap: number;
+  /** max fee / target price, (0, 0.25], default 0.25 */
+  maxFraction?: number;
+  /** optional persistence of the daily total, in USDC atomic units */
+  spendStore?: { get(day: string): number | Promise<number>; add(day: string, atomic: number): void | Promise<void> };
+}
+export declare const CHECK_FEE_TERMS: { readonly scheme: string; readonly network: string; readonly asset: string; readonly payTo: string; readonly minAtomic: number; readonly maxAtomic: number };
+export declare function expectedCheckFee(targetAtomic: number | string): number;
 export interface SpotCheckOptions {
   /** your client id (gets the free daily check; first-router ids get a 1,000-check pool) */
   client?: string;
@@ -7,6 +21,8 @@ export interface SpotCheckOptions {
   payFetch?: (input: any, init?: any) => Promise<Response>;
   /** max USD to pay for one check (default 0.05) */
   maxCheckUsd?: number;
+  /** 0.5.0, opt-in: pay 402xAgent's fee within caps when the free check is used up (off = 0.4.1 behaviour) */
+  autoPayCheck?: AutoPayCheckOptions;
   /** what to do on verdict "recheck" (default "block") */
   onRecheck?: "block" | "allow";
   /** what to do when 402xAgent cannot answer (default "allow" so an outage never stops your payments) */
@@ -31,7 +47,7 @@ export declare const LEGACY_ENDPOINT: string;
 export declare const DEFAULT_REF: string;
 export declare function spotCheckFetch<F extends (input: any, init?: any) => Promise<Response>>(fetchImpl?: F, opts?: SpotCheckOptions): F;
 export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions): A;
-export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string, o?: { method?: string; intent?: any }) => Promise<SpotDecision>;
-export declare function checkBeforePay(url: string, o?: SpotCheckOptions & { price?: number; payTo?: string; network?: string; method?: string }): Promise<SpotDecision>;
+export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string, o?: { method?: string; intent?: any; target?: { accepts: any[] } | null }) => Promise<SpotDecision>;
+export declare function checkBeforePay(url: string, o?: SpotCheckOptions & { price?: number; payTo?: string; network?: string; method?: string; accepts?: any[] }): Promise<SpotDecision>;
 export declare function readPaymentIntent(headerValue: string): { network: string | null; payTo: string | null; priceUsd: number | null } | null;
 export default spotCheckFetch;
