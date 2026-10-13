@@ -1,44 +1,76 @@
 # x402-spotcheck: check before you pay
 
-A one-line guard for x402 clients. Right before your client sends a payment, it asks
-[402xAgent](https://402xagent.com)
-whether the target's live 402 matches what you expect. It returns `skip` (blocked), `pay` (sent), or `recheck` (blocked by default, configurable).
+A guard for x402 clients and routers. Right before your client signs, it judges the 402 the seller sent: are these sane USDC terms on Base, and do they match your listing (price, pay-to, network)? A `skip` blocks the payment, with a reason code. Anything else, including unknown, a timeout or an error, lets the payment through.
 
-It never sees your keys. It reads the payment header your client already built, and when a check says skip, that header is never sent.
+- **Local by default (1.0.0).** It judges the 402 your client already received with [spotcheck-rules](https://github.com/withgrokbot/spotcheck-rules) (MIT, vendored as `x402-spotcheck/rules`). It makes no network calls, needs no service and has no dependencies.
+- **Unknown means pay.** A `skip` blocks only with a reason code from [rules.json](https://402xagent.com/rules.json): `price_mismatch`, `pay_to_mismatch`, `network_mismatch`, `asset_not_usdc`, `bad_challenge` (local), plus `network_unsupported`, `ssrf_blocked`, `ambiguous` (service). A recipient with no score or history is never refused.
+- **No tracking.** By default it sends no client id, no ref and no headers. Local mode sends nothing at all.
+- **Base only by default.** Requirements on other chains pass through untouched. Solana is opt-in with `solana: true`.
+- **The 402xAgent service is opt-in** (`mode: "service"`). Its timeout is a hard deadline (`timeoutMs`, default 1500 ms) and fails open by default. `onUnavailable: "block"` is honored exactly, on a timeout and on any error.
+- It never sees your keys.
 
 ```bash
-npm i github:withgrokbot/x402-spotcheck
+npm i github:withgrokbot/x402-spotcheck#v1.0.0
 ```
 
 ## One line
 
-**@x402/fetch** (the older `x402-fetch` has the same `wrapFetchWithPayment(fetch, …)` shape):
+**@x402/fetch**:
 
 ```js
-const pay = wrapFetchWithPayment(spotCheckFetch(fetch), client);
+const pay = wrapFetchWithPayment(spotCheckFetch(fetch, { expected: (url) => myListing.get(url) }), client);
 ```
 
-**@x402/axios** (the older `x402-axios` works the same way: `withPaymentInterceptor(spotCheckAxios(axios.create()), walletClient)`):
+**x402 client hook** (`onBeforePaymentCreation`, [x402-foundation/x402](https://github.com/x402-foundation/x402) `@x402/core` 2.x; register your spending cap first):
 
 ```js
-const api = wrapAxiosWithPayment(spotCheckAxios(axios.create()), client);
+client.onBeforePaymentCreation(mySpendingCap).onBeforePaymentCreation(spotCheckBeforePaymentHook({ expected: (url) => myListing.get(url) }));
 ```
 
-With the imports:
+**three.ws mcp-bridge** (`buildSpendingCapHook` in `mcp-bridge/src/x402-axios-client.js`; the cap runs first):
 
 ```js
-import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
-import { privateKeyToAccount } from "viem/accounts";
-import { spotCheckFetch } from "x402-spotcheck";
-
-const client = new x402Client().register("eip155:*", new ExactEvmScheme(privateKeyToAccount(process.env.EVM_PRIVATE_KEY)));
-const pay = wrapFetchWithPayment(spotCheckFetch(fetch, { client: "my-router" }), client);
-
-const res = await pay("https://some-x402-seller.example/api/data"); // throws SpotCheckBlockedError on skip
+client.onBeforePaymentCreation(threeWsSpendingCapThenSpotCheck(buildSpendingCapHook));
 ```
 
-Requests that don't carry a payment never trigger a check. Only the retry that carries `PAYMENT-SIGNATURE` or `X-PAYMENT` gets checked.
+**@x402/axios**: `wrapAxiosWithPayment(spotCheckAxios(axios.create(), opts), client)`.
+
+`expected(url, intent)` returns your listing `{ price, payTo, network }` or nothing. Without a listing, it checks the terms themselves: a readable amount, a valid pay-to address and canonical USDC.
+
+## Semver promise
+
+The verdict behavior (what pays, what skips and why) changes only on a major version. Minor and patch releases may add options (off by default), fix crashes or improve docs. They never turn a `pay` into a `skip`. Pin exactly:
+
+```bash
+npm i github:withgrokbot/x402-spotcheck#v1.0.0       # package.json: "x402-spotcheck": "github:withgrokbot/x402-spotcheck#v1.0.0"
+npm i github:withgrokbot/spotcheck-rules#v1.0.0      # the rules alone
+```
+
+## Migrating from 0.x
+
+0.x installs that are pinned to a tag are not affected. To keep the 0.5 behavior, pin `github:withgrokbot/x402-spotcheck#v0.5.0`. To get it on 1.0.0:
+
+```js
+spotCheckFetch(fetch, { mode: "service", ref: "via-x402-spotcheck", onRecheck: "block", solana: true, timeoutMs: 15000 });
+```
+
+What changed in 1.0.0: local mode is the default (0.x always called 402xAgent); `recheck`, a `skip` without a known code, and a free-tier terms-hash mismatch that the local rules can't name now pay; no `ref` is sent by default; non-Base requirements pass through unless `solana: true`; the service timeout is 1.5 s and a hard deadline (it was 15 s); and a failed check is remembered for 10 s, so the signed retry doesn't wait a second time (`unavailableTtlMs`). Paid-tier terms are still enforced, with reason codes.
+
+## Test kit (vitest and node:test)
+
+Any integration that calls a pre-payment check can prove four things: with the flag off it makes no calls; a timeout lets the payment through; a `{}` answer lets it through; a skip blocks.
+
+```js
+import { test } from "node:test"; // or: import { it as test } from "vitest";
+import { spotcheckContract } from "x402-spotcheck/testkit";
+spotcheckContract(test, ({ enabled, fetch, timeoutMs }) => (enabled ? myHook({ fetch, timeoutMs }) : undefined));
+```
+
+`build` returns an x402 `onBeforePaymentCreation` hook and must use the `fetch` it is given.
+
+---
+
+Everything below describes the opt-in **service mode** (`mode: "service"`), where 402xAgent probes the target itself.
 
 ## A real case from /v1/skips
 
@@ -76,7 +108,7 @@ So `pay(...)` throws `SpotCheckBlockedError` and nothing is signed onto the wire
 
 ```js
 spotCheckFetch(fetch, {
-  client: "my-router",
+  mode: "service",
   expected: (url, intent) => myCatalog.get(url), // { price: 0.01, payTo: "0x…", network: "eip155:8453" }
 });
 ```
@@ -114,7 +146,7 @@ Agents that sign payments themselves can call `assertApprovedPayment(await check
 You get 1 free check per client per UTC day. After that a check costs one tenth of the target's quoted price, minimum $0.01, cap $0.25, in USDC on Base via x402. Pass `payFetch` to pay for checks with your own x402 client, capped by `maxCheckUsd` (default $0.05):
 
 ```js
-const pay = wrapFetchWithPayment(spotCheckFetch(fetch, { client: "my-router", payFetch: wrapFetchWithPayment(fetch, client) }), client);
+const pay = wrapFetchWithPayment(spotCheckFetch(fetch, { mode: "service", payFetch: wrapFetchWithPayment(fetch, client) }), client);
 ```
 
 If you don't pass `payFetch` and the free check is used up, the guard counts 402xAgent as unavailable. That fails open by default (`onUnavailable: "allow"`), so an outage or a missing budget never stops your payments.
@@ -139,6 +171,7 @@ const method = r.extensions?.bazaar?.info?.input?.method || "GET";
 
 // 2. Check it against the listing (paid: payFetch pays the check, up to maxCheckUsd)
 const decision = await checkBeforePay(r.resource, {
+  mode: "service",
   method,
   price: Number(listed.amount) / 1e6, // USDC has 6 decimals
   payTo: listed.payTo,
@@ -162,16 +195,19 @@ await assertApprovedPayment(decision, requirement); // throws "refused to sign: 
 
 | option | default | |
 |---|---|---|
-| `client` | none | your client id (first-router ids get their pool) |
-| `onRecheck` | `"block"` | `"allow"` to pay on recheck |
-| `onUnavailable` | `"allow"` | `"block"` to fail closed |
-| `payFetch` | none | an x402 fetch that pays 402xAgent's own price |
-| `maxCheckUsd` | `0.05` | most to pay for one check |
+| `mode` | `"local"` | `"service"` asks 402xAgent (opt-in) |
 | `expected(url, intent)` | none | your listing `{ price, payTo, network }` |
-| `onDecision(d)` | none | log or meter every decision |
-| `cacheTtlMs` | `300000` | verdict cache per url and expectation |
-| `ref` | `"via-x402-spotcheck"` | attribution tag sent with each check; set your own, e.g. `spotCheckFetch(fetch, { ref: "via-agentkit" })` |
-| `endpoint` | `https://api.402xagent.com/v1/products/endpoint-spot-check` (0.4.0+) | the check URL; earlier defaults (0.3.x, and `verified-catalog-lookup.withgrokbot.workers.dev` before 0.3.0) are the same service and still work (`LEGACY_ENDPOINT`) |
+| `solana` | `false` | judge Solana mainnet too; otherwise non-Base passes through |
+| `tolerance` | `0.01` | local price tolerance |
+| `onDecision(d)` | none | log or meter every decision (errors in it are ignored) |
+| `timeoutMs` | `1500` | service: hard deadline for one check |
+| `onUnavailable` | `"allow"` | service: `"block"` to fail closed on timeout or error |
+| `onRecheck` | `"allow"` | service: `"block"` to refuse on recheck |
+| `client`, `ref` | not sent | service: opt-in attribution |
+| `payFetch`, `maxCheckUsd` | none, `0.05` | service: pay 402xAgent's own price |
+| `autoPayCheck` | off | service: capped auto-pay of the check fee (below) |
+| `cacheTtlMs` | `300000` | service: verdict cache |
+| `endpoint` | `https://api.402xagent.com/v1/products/endpoint-spot-check` | service: check URL; earlier hosts still work (`LEGACY_ENDPOINT`) |
 
 Errors: `SpotCheckBlockedError` has `decision` (verdict, reason, approved terms), `reason`, and `receiptUrl` (the public receipt for that check, when the Worker returns one).
 
@@ -185,7 +221,7 @@ Plain function, for any agent framework tool:
 
 ```js
 import { checkBeforePay } from "x402-spotcheck";
-const d = await checkBeforePay(url, { client: "my-agent", price: 0.01, network: "eip155:8453" });
+const d = await checkBeforePay(url, { accepts, price: 0.01, network: "eip155:8453" }); // local; add mode: "service" to ask 402xAgent
 if (!d.allowed) return `not paying: ${d.verdict} (${d.reason})`;
 ```
 
@@ -193,17 +229,17 @@ There are more examples in [examples/](examples/): Python, an MCP config, and a 
 
 ## Tests
 
-`npm test` runs unit tests with no network, including the pay-step cases: matching, a different pay_to/network/asset, an amount above approved, a mixed 402 narrowed to one requirement, a free-tier hash, and skip. `npm i && npm run test:integration` runs the real `@x402/fetch`, `@x402/axios` and `@x402/evm` (2.28) against a mock seller, signing locally with a throwaway key. It counts every payload the client creates, to prove that a refused or skipped payment is never signed. (The v1 packages `x402-fetch` and `x402-axios` currently fail to install from npm because their `x402@^1.2.1` dependency can't be found, so they are covered only by the unit tests' `X-PAYMENT` path.) The integration test checks that a blocked payment header never leaves the process.
+`npm test` runs unit tests with no network: the 1.0.0 contract (local default, timeout, unknown = pay, no tracking, Base only, hooks with a real `@x402/core` client, the test kit), including the pay-step cases: matching, a different pay_to/network/asset, an amount above approved, a mixed 402 narrowed to one requirement, a free-tier hash, and skip. `npm i && npm run test:integration` runs the real `@x402/fetch`, `@x402/axios` and `@x402/evm` (2.28) against a mock seller, signing locally with a throwaway key. It counts every payload the client creates, to prove that a refused or skipped payment is never signed. (The v1 packages `x402-fetch` and `x402-axios` currently fail to install from npm because their `x402@^1.2.1` dependency can't be found, so they are covered only by the unit tests' `X-PAYMENT` path.) The integration test checks that a blocked payment header never leaves the process.
 
 MIT. Made by [@withgrokbot](https://github.com/withgrokbot). The 402xAgent service and the crawl live at [withgrokbot/verified-catalog](https://github.com/withgrokbot/verified-catalog).
 
-### Auto-pay the check (opt-in, 0.5.0)
+### Auto-pay the check (opt-in, service mode)
 
 When the free check is used up, `autoPayCheck` pays the 402xAgent fee with the same x402 client, before it pays the seller:
 
 ```js
 const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
-  client: "my-router",
+  mode: "service",
   autoPayCheck: { wrapFetch: (f) => wrapFetchWithPayment(f, client), maxPerCheck: 0.05, dailyCap: 1 },
 }), client);
 ```

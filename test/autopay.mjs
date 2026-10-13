@@ -1,7 +1,7 @@
 // 0.5.0: autoPayCheck + Solana terms hash. Mocks only: no network, no keys, no real payments.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import * as NEW from "../index.js";
+import * as NEW from "./service-shim.mjs";
 import * as OLD from "./fixtures/index-0.4.1.mjs"; // the published 0.4.1 code, verbatim
 import { fakeWrapFetchWithPayment } from "./mock.mjs";
 
@@ -69,18 +69,19 @@ const SCENARIOS = [
   ["expected + POST", {}, { client: "r1", expected: () => ({ price: 0.5, payTo: "0x" + "ab".repeat(20), network: "eip155:8453" }) }],
   ["solana target, paid terms", { target: solAcc(), spot402: [feeAcc(100000)] }, "PAYFETCH"],
 ];
-test("autoPayCheck off: every request is byte-identical to 0.4.1 (fetch + axios + checkBeforePay)", async () => {
+test("1.0.0 service mode with 0.x settings (ref, onRecheck: block, solana): requests byte-identical to 0.4.1", async () => {
   for (const [name, wo, o] of SCENARIOS) {
     const out = [];
     for (const mod of [OLD, NEW]) {
       const w = world(wo);
-      const opts = o === "PAYFETCH" ? { payFetch: fakeWrapFetchWithPayment(w.fetch) } : o;
+      const compat = mod === NEW ? { ref: NEW.DEFAULT_REF, onRecheck: "block", solana: true, unavailableTtlMs: 0 } : {};
+      const opts = { ...compat, ...(o === "PAYFETCH" ? { payFetch: fakeWrapFetchWithPayment(w.fetch) } : o) };
       const init = name.includes("POST") ? { method: "POST", body: "{}" } : undefined;
       let err = null;
       try { await fakeWrapFetchWithPayment(mod.spotCheckFetch(w.fetch, opts))("https://seller.test/api?q=1", init); } catch (e) { err = e.name + ":" + e.reason; }
-      await mod.checkBeforePay("https://seller.test/x", { fetch: w.fetch, price: 0.5, client: "c" });
+      await mod.checkBeforePay("https://seller.test/x", { ...compat, fetch: w.fetch, price: 0.5, client: "c" });
       const handlers = [];
-      mod.spotCheckAxios({ interceptors: { request: { use: (f) => handlers.push(f) }, response: { use: () => {} } } }, { fetch: w.fetch });
+      mod.spotCheckAxios({ interceptors: { request: { use: (f) => handlers.push(f) }, response: { use: () => {} } } }, { ...compat, fetch: w.fetch });
       try { await handlers[0]({ url: "https://seller.test/ax", method: "get", headers: { "X-PAYMENT": b64({ accepted: baseAcc() }) } }); } catch (e) { err = (err || "") + "|" + e.reason; }
       out.push({ log: w.log, ev: w.ev, err });
     }
@@ -106,12 +107,16 @@ test("Base target: check fee paid first (same signer), paid verdict used, then t
 });
 test("Solana target: fee (1/10 of $1) paid on Base, Solana seller paid with the exact base58 terms", async () => {
   const w = world({ target: solAcc("1000000"), spot402: [feeAcc(100000)] });
-  assert.equal((await run(w, { autoPayCheck: ap({ maxPerCheck: 0.1 }) })).status, 200);
+  assert.equal((await run(w, { solana: true, autoPayCheck: ap({ maxPerCheck: 0.1 }) })).status, 200);
   assert.deepEqual(w.ev, ["target:402", "spot:402", "spot:402", "spot:paid", "target:paid"]);
+  const off = world({ target: solAcc("1000000"), spot402: [feeAcc(100000)] });
+  assert.equal((await run(off, { autoPayCheck: ap() })).status, 200);
+  assert.deepEqual(off.ev, ["target:402", "target:paid"], "1.0.0: Solana passes through untouched unless solana: true");
 });
 test("Solana target on the free tier: the hash now matches the Worker (0.4.1 refused to sign)", async () => {
   const w = world({ target: solAcc() });
-  assert.equal((await run(w, {})).status, 200);
+  assert.equal((await run(w, { solana: true })).status, 200);
+  assert.ok(w.ev.includes("spot:free"), "the check ran");
   assert.equal(w.targetPaid(), 1);
   const w0 = world({ target: solAcc() });
   await assert.rejects(fakeWrapFetchWithPayment(OLD.spotCheckFetch(w0.fetch))("https://seller.test/api"), /terms differ/);

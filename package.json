@@ -1,7 +1,7 @@
 {
   "name": "x402-spotcheck",
-  "version": "0.5.0",
-  "description": "Check before you pay: one-line guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios). Calls 402xAgent right before a payment; blocks on skip.",
+  "version": "1.0.0",
+  "description": "Check before you pay, for x402 clients and routers. Local rules by default (no network calls, no tracking); the 402xAgent service is opt-in. Unknown means pay; skip only with a reason code.",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",
@@ -9,29 +9,44 @@
     ".": {
       "types": "./index.d.ts",
       "default": "./index.js"
+    },
+    "./rules": {
+      "types": "./rules.d.ts",
+      "default": "./rules.js"
+    },
+    "./testkit": {
+      "types": "./testkit.d.ts",
+      "default": "./testkit.js"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "rules.js",
+    "rules.d.ts",
+    "testkit.js",
+    "testkit.d.ts",
     "README.md",
     "LICENSE",
     "examples"
   ],
   "scripts": {
-    "test": "node test/test.mjs && node test/autopay.mjs",
+    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs",
     "test:integration": "node test/integration.mjs"
   },
   "keywords": [
-    "x402",
-    "payments",
-    "agents",
-    "mcp",
     "402xagent",
-    "pre-payment-check",
+    "agents",
+    "base",
     "guard",
+    "mcp",
+    "onBeforePaymentCreation",
+    "payments",
+    "pre-payment-check",
+    "router",
+    "solana",
     "usdc",
-    "base"
+    "x402"
   ],
   "author": "withgrokbot",
   "license": "MIT",

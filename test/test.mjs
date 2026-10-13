@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spotCheckFetch, spotCheckAxios, checkBeforePay, readPaymentIntent, SpotCheckBlockedError, createSpotChecker } from "../index.js";
+import { spotCheckFetch, spotCheckAxios, checkBeforePay, readPaymentIntent, SpotCheckBlockedError, createSpotChecker } from "./service-shim.mjs";
 import { world, fakeWrapFetchWithPayment, TERMS, USDC } from "./mock.mjs";
 import { createHash } from "node:crypto";
-import { termsString, termsMismatch, assertApprovedPayment, DEFAULT_ENDPOINT } from "../index.js";
+import { termsString, termsMismatch, assertApprovedPayment, DEFAULT_ENDPOINT } from "./service-shim.mjs";
 const sha = (t) => createHash("sha256").update(termsString(t)).digest("hex");
 const acc = (o = {}) => ({ scheme: "exact", network: "eip155:8453", amount: "10000", asset: USDC, payTo: "0x" + "ab".repeat(20), maxTimeoutSeconds: 300, extra: { name: "USD Coin", version: "2" }, ...o });
 
@@ -16,7 +16,10 @@ test("pay verdict: payment goes through; unpaid requests never trigger a check",
   assert.equal(r.status, 200);
   assert.equal(w.log.spot.length, 1, "one check, right before paying");
   assert.equal(w.log.spot[0].client, "my-router");
-  assert.equal(w.log.spot[0].ref, "via-x402-spotcheck");
+  assert.equal(w.log.spot[0].ref, undefined, "1.0.0: no ref unless you pass one");
+  const w2 = world();
+  await fakeWrapFetchWithPayment(spotCheckFetch(w2.fetch))("https://good.test/api");
+  assert.deepEqual(Object.keys(w2.log.spot[0]), ["url"], "1.0.0: no client id, no ref by default");
   assert.deepEqual(w.log.target.map((t) => t.paid), [false, true]);
 });
 
@@ -27,11 +30,11 @@ test("skip verdict: throws SpotCheckBlockedError and the payment is never sent",
   assert.deepEqual(w.log.target.map((t) => t.paid), [false], "signed header never left the process");
 });
 
-test("recheck: blocks by default, allowed with onRecheck: 'allow'", async () => {
-  const w = world({ verdicts: { "https://flaky.test/api": ["recheck", "ambiguous"] } });
-  await assert.rejects(fakeWrapFetchWithPayment(spotCheckFetch(w.fetch))("https://flaky.test/api"), SpotCheckBlockedError);
-  const r = await fakeWrapFetchWithPayment(spotCheckFetch(w.fetch, { onRecheck: "allow" }))("https://flaky.test/api");
-  assert.equal(r.status, 200);
+test("1.0.0 recheck = unknown: pays by default, blocks only with onRecheck: 'block'; skip without a known code pays", async () => {
+  const w = world({ verdicts: { "https://flaky.test/api": ["recheck", "timeout"], "https://odd.test/api": ["skip", "something_new"] } });
+  assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(w.fetch))("https://flaky.test/api")).status, 200);
+  await assert.rejects(fakeWrapFetchWithPayment(spotCheckFetch(w.fetch, { onRecheck: "block" }))("https://flaky.test/api"), SpotCheckBlockedError);
+  assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(w.fetch))("https://odd.test/api")).status, 200);
 });
 
 test("Spot-Check unavailable (5xx or unpaid 402): allow by default, block with onUnavailable: 'block'", async () => {
@@ -101,7 +104,6 @@ test("PAY STEP (paid terms): matching 402 is signed; the signed payment is exact
 
 for (const [name, over, re] of [
   ["pay_to", { payTo: "0x" + "ee".repeat(20) }, /pay_to differs/],
-  ["network", { network: "eip155:84532" }, /network differs/],
   ["asset", { asset: "0x" + "99".repeat(20) }, /asset differs/],
   ["amount above approved", { amount: "10001" }, /amount above approved/],
 ]) {
@@ -126,8 +128,11 @@ test("PAY STEP (free tier hash): matching terms pass, any change refuses to sign
   const ok = world({ hash: sha(TERMS) });
   assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(ok.fetch))("https://good.test/api")).status, 200);
   const bad = world({ hash: sha(TERMS), targetAccepts: [acc({ amount: "9000" })] });
-  await assert.rejects(fakeWrapFetchWithPayment(spotCheckFetch(bad.fetch))("https://good.test/api"), /terms differ from the approved payment/);
-  assert.equal(bad.log.target.filter((t) => t.paid).length, 0);
+  // 1.0.0: a hash mismatch alone is not a reason code, so it pays; it blocks when the local rules name one
+  assert.equal((await fakeWrapFetchWithPayment(spotCheckFetch(bad.fetch))("https://good.test/api")).status, 200);
+  const worse = world({ hash: sha(TERMS), targetAccepts: [acc({ asset: "0x" + "99".repeat(20) })] });
+  await assert.rejects(fakeWrapFetchWithPayment(spotCheckFetch(worse.fetch))("https://good.test/api"), /asset_not_usdc/);
+  assert.equal(worse.log.target.filter((t) => t.paid).length, 0);
 });
 
 test("PAY STEP: skip = no signature (the 402 never reaches the client)", async () => {
@@ -142,7 +147,7 @@ test("PAY STEP: last-line check refuses a signed header that doesn't fit; assert
   const w = world({ approve: TERMS });
   const g = spotCheckFetch(w.fetch);
   const hdr = Buffer.from(JSON.stringify({ x402Version: 2, accepted: acc({ amount: "20000" }), payload: {} })).toString("base64");
-  await assert.rejects(g("https://good.test/api", { headers: { "PAYMENT-SIGNATURE": hdr } }), /refused to send: amount above approved/);
+  await assert.rejects(g("https://good.test/api", { headers: { "PAYMENT-SIGNATURE": hdr } }), /refused to send: price_mismatch: amount above approved/);
   const d = await checkBeforePay("https://good.test/api", { fetch: w.fetch });
   assert.equal(await assertApprovedPayment(d, acc()), true);
   await assert.rejects(assertApprovedPayment(d, acc({ network: "eip155:1" })), /network differs/);

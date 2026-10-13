@@ -1,5 +1,5 @@
 export interface ApprovedPayment { scheme: string; network: string; asset: string; asset_is_usdc: boolean | null; amount_atomic: string; amount_usd: number | null; pay_to: string }
-export interface SpotDecision { url: string; verdict: "pay" | "skip" | "recheck" | "unavailable"; reason: string; allowed: boolean; checked: boolean; raw?: any; approved: { payment: ApprovedPayment } | { sha256: string } | null; receiptUrl: string | null }
+export interface SpotDecision { url: string; mode: "local" | "service" | "none"; verdict: "pay" | "skip" | "recheck" | "unavailable"; reason_code: string | null; reason: string; allowed: boolean; checked: boolean; raw?: any; fits?: (requirement: any) => Promise<string>; approved: { payment: ApprovedPayment } | { sha256: string } | null; receiptUrl: string | null }
 export interface AutoPayCheckOptions {
   /** wraps a fetch with your x402 client, e.g. (f) => wrapFetchWithPayment(f, client) */
   wrapFetch: (f: (input: any, init?: any) => Promise<Response>) => (input: any, init?: any) => Promise<Response>;
@@ -15,7 +15,15 @@ export interface AutoPayCheckOptions {
 export declare const CHECK_FEE_TERMS: { readonly scheme: string; readonly network: string; readonly asset: string; readonly payTo: string; readonly minAtomic: number; readonly maxAtomic: number };
 export declare function expectedCheckFee(targetAtomic: number | string): number;
 export interface SpotCheckOptions {
-  /** your client id (gets the free daily check; first-router ids get a 1,000-check pool) */
+  /** 1.0.0: "local" (default: judge the 402 you received, no network calls) or "service" (ask 402xAgent; opt-in) */
+  mode?: "local" | "service";
+  /** judge Solana mainnet too (default false: non-Base requirements pass through untouched) */
+  solana?: boolean;
+  /** local price tolerance, fraction (default 0.01) */
+  tolerance?: number;
+  /** service: how long a failed check is remembered, ms (default 10000) */
+  unavailableTtlMs?: number;
+  /** service only, opt-in (never sent by default): your client id (gets the free daily check; first-router ids get a 1,000-check pool) */
   client?: string;
   /** a fetch that can pay 402xAgent's own x402 price, e.g. wrapFetchWithPayment(fetch, client) */
   payFetch?: (input: any, init?: any) => Promise<Response>;
@@ -23,7 +31,7 @@ export interface SpotCheckOptions {
   maxCheckUsd?: number;
   /** 0.5.0, opt-in: pay 402xAgent's fee within caps when the free check is used up (off = 0.4.1 behaviour) */
   autoPayCheck?: AutoPayCheckOptions;
-  /** what to do on verdict "recheck" (default "block") */
+  /** service: what to do on verdict "recheck" (1.0.0 default "allow": unknown means pay) */
   onRecheck?: "block" | "allow";
   /** what to do when 402xAgent cannot answer (default "allow" so an outage never stops your payments) */
   onUnavailable?: "allow" | "block";
@@ -31,8 +39,10 @@ export interface SpotCheckOptions {
   expected?: (url: string, intent: { network: string | null; payTo: string | null; priceUsd: number | null } | null) => { price?: number; payTo?: string; network?: string } | undefined | Promise<{ price?: number; payTo?: string; network?: string } | undefined>;
   onDecision?: (d: SpotDecision) => void | Promise<void>;
   cacheTtlMs?: number;
+  /** service: hard deadline for the check, ms (default 1500); on expiry onUnavailable applies */
   timeoutMs?: number;
   endpoint?: string;
+  /** service only, opt-in: attribution tag (1.0.0 sends none by default) */
   ref?: string;
   fetch?: typeof fetch;
 }
@@ -45,6 +55,16 @@ export declare const DEFAULT_ENDPOINT: string;
 /** the pre-0.3.0 default (same service, still valid) */
 export declare const LEGACY_ENDPOINT: string;
 export declare const DEFAULT_REF: string;
+export declare const VERSION: string;
+export declare const DEFAULT_TIMEOUT_MS: number;
+export declare const SERVICE_SKIP_CODES: readonly string[];
+type BeforePaymentHook = (ctx: { paymentRequired: any; selectedRequirements: any }) => Promise<void | { abort: true; reason: string }>;
+/** x402 (x402-foundation/x402) onBeforePaymentCreation hook */
+export declare function spotCheckBeforePaymentHook(opts?: SpotCheckOptions & { method?: string | ((url: string) => string | Promise<string>) }): BeforePaymentHook;
+export declare function composeBeforePaymentHooks(...hooks: Array<BeforePaymentHook | undefined | null>): BeforePaymentHook;
+/** three.ws mcp-bridge: pass its buildSpendingCapHook; the cap runs first */
+export declare function threeWsSpendingCapThenSpotCheck(buildSpendingCapHook: () => BeforePaymentHook, opts?: SpotCheckOptions): BeforePaymentHook;
+export { judgeRequirement, judge402 } from "./rules.js";
 export declare function spotCheckFetch<F extends (input: any, init?: any) => Promise<Response>>(fetchImpl?: F, opts?: SpotCheckOptions): F;
 export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions): A;
 export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string, o?: { method?: string; intent?: any; target?: { accepts: any[] } | null }) => Promise<SpotDecision>;

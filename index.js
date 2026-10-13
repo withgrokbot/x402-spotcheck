@@ -1,17 +1,18 @@
 // x402-spotcheck: check before you pay. Drop-in guard for x402 clients (@x402/fetch, x402-fetch, @x402/axios, x402-axios).
-// Right before your client sends a payment, it asks 402xAgent about the target; skip blocks the payment,
-// pay lets it through, recheck is configurable (default: block). It never sees or holds your keys.
+// 1.0.0: judges the 402 your client already received with local rules (spotcheck-rules, vendored); no network calls,
+// no tracking. Calling the 402xAgent service is opt-in (mode: "service"). It never sees or holds your keys.
+import { judgeRequirement, judge402, SKIP_CODES, BASE_MAINNET, SOLANA_MAINNET, caip } from "./rules.js";
 
-export const DEFAULT_REF = "via-x402-spotcheck"; // attribution only; integrators set their own (e.g. via-cdp)
-// 0.4.0: 402xAgent lives on api.402xagent.com. Every earlier host serves the same Worker and stays
-// valid (pass it as `endpoint` to keep using it); all of them are recognised as the check itself, never guarded.
+export const VERSION = "1.0.0";
+export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
+// Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
 export const LEGACY_ENDPOINT = "https://verified-catalog-lookup.withgrokbot.workers.dev/v1/products/endpoint-spot-check";
 const KNOWN_ENDPOINTS = [
   DEFAULT_ENDPOINT,
   "https://402xagent.com/v1/products/endpoint-spot-check",
   LEGACY_ENDPOINT,
-  "https://api.payscout.dev/v1/products/endpoint-spot-check", // 0.3.x default (older host, same service)
+  "https://api.payscout.dev/v1/products/endpoint-spot-check",
   "https://payscout.dev/v1/products/endpoint-spot-check",
 ];
 const PAY_HEADERS = ["payment-signature", "x-payment"];
@@ -230,55 +231,85 @@ function makeAutoPay(cfg, base) {
   return { pay, spentToday: () => spent.get(utcDay()) || 0 };
 }
 
+// ---------------------------------------------------------------- 1.0.0: local by default, the service is opt-in
+// Verdict contract (changes only on a major version): skip blocks only with a reason code from
+// https://402xagent.com/rules.json; unknown, unchecked, timeout or error pays (unless you set onUnavailable: "block").
+export const SERVICE_SKIP_CODES = Object.freeze(["price_mismatch", "pay_to_mismatch", "network_mismatch", "asset_not_usdc", "network_unsupported", "ssrf_blocked", "bad_challenge", "ambiguous"]); // no_paywall is not here: we only ask after a 402, so it is a misprobe = unknown = pay
+export const DEFAULT_TIMEOUT_MS = 1500;
+const LOCAL_SKIP = new Set(SKIP_CODES);
+const SERVICE_SKIP = new Set(SERVICE_SKIP_CODES);
+const judged = (opts) => (a) => !!a && (caip(a.network) === BASE_MAINNET || (opts.solana && caip(a.network) === SOLANA_MAINNET));
+const passThrough = (url, why) => ({ url: String(url), mode: "none", verdict: "pay", reason_code: null, reason: why, allowed: true, checked: false, approved: null, receiptUrl: null, fits: async () => "" });
+
+// Promise with a hard deadline: resolves to `fallback` at timeoutMs even if `p` never settles.
+function deadline(p, ms, fallback) {
+  let t;
+  return Promise.race([p, new Promise((r) => { t = setTimeout(() => r(fallback()), ms); })]).finally(() => clearTimeout(t));
+}
+
+async function listingOf(opts, url, intent) {
+  if (!opts.expected) return undefined;
+  try {
+    const e = await opts.expected(url, intent);
+    return e ? { price: e.price, payTo: e.payTo, network: e.network } : undefined;
+  } catch { return undefined; }
+}
+
+function localDecider(opts) {
+  return async function decide(url, { intent = null, target = null } = {}) {
+    const ropts = { listing: await listingOf(opts, url, intent), solana: !!opts.solana, tolerance: opts.tolerance };
+    const r = judge402(target, ropts);
+    const blocked = r.verdict === "skip" && LOCAL_SKIP.has(r.reason_code);
+    return {
+      url: String(url), mode: "local", verdict: blocked ? "skip" : "pay", reason_code: r.reason_code, reason: r.reason,
+      allowed: !blocked, checked: r.checked, approved: null, receiptUrl: null,
+      fits: async (req) => { const x = judgeRequirement(req, ropts); return x.verdict === "skip" && LOCAL_SKIP.has(x.reason_code) ? `${x.reason_code}: ${x.reason}` : ""; },
+    };
+  };
+}
+
 /**
- * Core check. Returns { url, verdict, reason, allowed, checked, raw }.
- * opts: client, endpoint, payFetch, maxCheckUsd, onRecheck ("block"|"allow"), onUnavailable ("allow"|"block"),
- *       expected(url, intent) -> {price?, payTo?, network?} (your listing), cacheTtlMs, timeoutMs, onDecision, fetch.
+ * The 402xAgent service check (opt-in: mode "service"). Returns { url, verdict, reason, reason_code, allowed, checked, raw }.
+ * opts: client, ref (both sent only if you set them), endpoint, timeoutMs (default 1500, hard), onRecheck ("allow"|"block",
+ *       default allow), onUnavailable ("allow"|"block", default allow), expected, cacheTtlMs, payFetch, maxCheckUsd,
+ *       autoPayCheck, solana, onDecision, fetch.
  */
 export function createSpotChecker(opts = {}) {
   const base = opts.fetch || globalThis.fetch;
   const endpoint = opts.endpoint || DEFAULT_ENDPOINT;
   const maxCheckUsd = opts.maxCheckUsd ?? 0.05;
   const ttl = opts.cacheTtlMs ?? 5 * 60 * 1000;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const cache = new Map();
-
   const auto = opts.autoPayCheck ? makeAutoPay(opts.autoPayCheck, base) : null;
 
-  async function ask(qs, payFetch, target) {
+  async function ask(qs, payFetch, target, signal) {
     const u = endpoint + "?" + qs.toString();
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), opts.timeoutMs ?? 15000);
-    try {
-      let r = await base(u, { headers: { accept: "application/json" }, signal: ac.signal });
-      if (r.status === 402 && auto) {
-        // 0.5.0 autoPayCheck: pay the check fee within the caps, else the same "unavailable" as without a payFetch.
-        const paid = await auto.pay(u, r, target, ac.signal);
-        if (!paid.res) return { unavailable: "402xAgent check needs payment (autoPayCheck declined: " + paid.why + ")" };
-        r = paid.res;
-      } else if (r.status === 402) {
-        // 402xAgent's own price: 1/10 of the target's quote, $0.01-$0.25. Pay only within maxCheckUsd.
-        const req = b64json(r.headers.get("payment-required") || "") || (await r.json().catch(() => ({})));
-        const amt = Number(((req.accepts || [])[0] || {}).amount);
-        if (!payFetch || !(amt / 1e6 <= maxCheckUsd)) return { unavailable: "402xAgent check needs payment" + (payFetch ? ` above maxCheckUsd ($${amt / 1e6})` : " (no payFetch given)") };
-        r = await payFetch(u, { headers: { accept: "application/json" } });
-      }
-      if (r.status !== 200) return { unavailable: "402xAgent check HTTP " + r.status };
-      return { body: await r.json() };
-    } catch (e) {
-      return { unavailable: "402xAgent check unreachable: " + (e && e.name === "AbortError" ? "timeout" : String((e && e.message) || e)) };
-    } finally {
-      clearTimeout(timer);
+    let r = await base(u, { headers: { accept: "application/json" }, signal });
+    if (r.status === 402 && auto) {
+      const paid = await auto.pay(u, r, target, signal);
+      if (!paid.res) return { unavailable: "402xAgent check needs payment (autoPayCheck declined: " + paid.why + ")" };
+      r = paid.res;
+    } else if (r.status === 402) {
+      const req = b64json(r.headers.get("payment-required") || "") || (await r.json().catch(() => ({})));
+      const amt = Number(((req.accepts || [])[0] || {}).amount);
+      if (!payFetch || !(amt / 1e6 <= maxCheckUsd)) return { unavailable: "402xAgent check needs payment" + (payFetch ? ` above maxCheckUsd ($${amt / 1e6})` : " (no payFetch given)") };
+      r = await payFetch(u, { headers: { accept: "application/json" }, signal });
     }
+    if (r.status !== 200) return { unavailable: "402xAgent check HTTP " + r.status };
+    const body = await r.json().catch(() => null);
+    if (!body || typeof body !== "object") return { unavailable: "402xAgent check: unreadable answer" };
+    return { body };
   }
 
   return async function check(url, { method = "GET", intent = null, target = null } = {}) {
-    const exp = (opts.expected && (await opts.expected(url, intent))) || {};
+    if (target && Array.isArray(target.accepts) && !target.accepts.some(judged(opts))) return passThrough(url, "network not checked (Base only by default)");
+    const exp = (await listingOf(opts, url, intent)) || {};
     const qs = new URLSearchParams({ url: String(url) });
     if (opts.client) qs.set("client", opts.client);
-    qs.set("ref", opts.ref || DEFAULT_REF);
+    if (opts.ref) qs.set("ref", opts.ref);
     if (String(method).toUpperCase() === "POST") qs.set("method", "POST");
-    const price = exp.price;
-    if (price != null) qs.set("claimed_price", String(price));
+    if (exp.price != null) qs.set("claimed_price", String(exp.price));
     if (exp.payTo) qs.set("pay_to", exp.payTo);
     if (exp.network) qs.set("network", exp.network);
     const key = qs.toString();
@@ -286,44 +317,73 @@ export function createSpotChecker(opts = {}) {
     let res;
     if (hit && hit.at > Date.now() - ttl) res = hit.res;
     else {
-      res = await ask(qs, opts.payFetch, target);
-      if (!res.unavailable) cache.set(key, { at: Date.now(), res });
+      const ac = new AbortController();
+      res = await deadline(
+        ask(qs, opts.payFetch, target, ac.signal).catch((e) => ({ unavailable: "402xAgent check unreachable: " + String((e && e.message) || e) })),
+        timeoutMs,
+        () => { ac.abort(); return { unavailable: `402xAgent check timeout (${timeoutMs} ms)` }; },
+      );
+      // A failed check is remembered briefly, so the signed retry of the same payment does not wait a second timeout.
+      cache.set(key, { at: res.unavailable ? Date.now() - ttl + Math.min(ttl, opts.unavailableTtlMs ?? 10000) : Date.now(), res });
     }
     let d;
     if (res.unavailable) {
-      const allow = (opts.onUnavailable || "allow") === "allow";
-      d = { url: String(url), verdict: "unavailable", reason: res.unavailable, allowed: allow, checked: false, approved: null, receiptUrl: null };
+      const allow = (opts.onUnavailable || "allow") !== "block";
+      d = { url: String(url), mode: "service", verdict: "unavailable", reason_code: null, reason: res.unavailable, allowed: allow, checked: false, approved: null, receiptUrl: null };
     } else {
-      const v = res.body.verdict;
-      const allowed = v === "pay" || (v === "recheck" && opts.onRecheck === "allow");
-      d = { url: String(url), verdict: v, reason: res.body.reason, allowed, checked: true, raw: res.body, receiptUrl: res.body.receipt_url || null };
-      d.approved = approvedOf(d);
+      const b = res.body;
+      const code = typeof b.reason_code === "string" ? b.reason_code : typeof b.reason === "string" && SERVICE_SKIP.has(b.reason) ? b.reason : null;
+      const v = b.verdict === "skip" && SERVICE_SKIP.has(code) ? "skip" : b.verdict === "skip" ? "pay" : b.verdict === "recheck" ? "recheck" : "pay";
+      const allowed = v === "pay" || (v === "recheck" && opts.onRecheck !== "block");
+      d = { url: String(url), mode: "service", verdict: v, reason_code: code, reason: b.reason, allowed, checked: true, raw: b, receiptUrl: b.receipt_url || null };
+      d.approved = v === "pay" ? approvedOf(d) : null;
     }
-    if (opts.onDecision) await opts.onDecision(d);
+    d.fits = async (req) => {
+      if (!d.approved) return "";
+      const why = await termsMismatch(req, d.approved);
+      if (!why) return "";
+      if (d.approved.payment) {
+        const code = why.startsWith("network") ? "network_mismatch" : why.startsWith("asset") ? "asset_not_usdc" : why.startsWith("pay_to") ? "pay_to_mismatch" : "price_mismatch";
+        return `${code}: ${why}`;
+      }
+      // free tier (hash only): block only if the local rules name a concrete problem; otherwise unknown = pay.
+      const x = judgeRequirement(req, { listing: exp, solana: !!opts.solana });
+      return x.verdict === "skip" && LOCAL_SKIP.has(x.reason_code) ? `${x.reason_code}: ${x.reason}` : "";
+    };
     return d;
   };
 }
 
-// A 402 came back: check now, before the x402 client can sign anything.
-async function guard402(res, url, method, check) {
+function makeDecider(opts) {
+  if (opts.autoPayCheck && opts.mode !== "service") throw new TypeError('autoPayCheck needs mode: "service"');
+  const decide = opts.mode === "service" ? createSpotChecker(opts) : localDecider(opts);
+  return async (url, o) => {
+    let d;
+    try { d = await decide(url, o); } catch (e) { d = passThrough(url, "check error: " + String((e && e.message) || e)); }
+    if (opts.onDecision) { try { await opts.onDecision(d); } catch { /* observers never block */ } }
+    return d;
+  };
+}
+
+// A 402 came back: decide now, before the x402 client can sign anything.
+async function guard402(res, url, method, decide) {
   const hdr = res.headers.get("payment-required");
   const fromHdr = hdr ? b64json(hdr) : null;
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = null; }
-  const d = await check(url, { method, target: fromHdr || body });
-  if (!d.allowed) throw new SpotCheckBlockedError(d);
-  const rebuilt = (h, b) => {
-    const headers = new Headers(res.headers);
-    if (h) headers.set("payment-required", encodeB64Json(h));
-    return new Response(b ? JSON.stringify(b) : text, { status: 402, statusText: res.statusText, headers });
-  };
-  if (!d.approved) return rebuilt(null, null); // unavailable + allowed: pass the 402 through untouched
   const pr = fromHdr || body;
-  if (!pr || !Array.isArray(pr.accepts)) throw new SpotCheckBlockedError(d, "refused to sign: unreadable 402");
-  const { kept, reasons } = await narrowRequirements(pr.accepts, d.approved);
-  if (!kept.length) throw new SpotCheckBlockedError(d, "refused to sign: " + (reasons[0] || "no requirement fits the approved payment"));
-  return rebuilt(fromHdr ? { ...fromHdr, accepts: kept } : null, body && Array.isArray(body.accepts) ? { ...body, accepts: kept } : null);
+  const d = await decide(url, { method, target: pr && Array.isArray(pr.accepts) ? pr : null });
+  if (!d.allowed) throw new SpotCheckBlockedError(d);
+  const untouched = () => new Response(text, { status: 402, statusText: res.statusText, headers: new Headers(res.headers) });
+  if (!pr || !Array.isArray(pr.accepts)) return untouched(); // unreadable = unknown = pass through
+  const kept = [], reasons = [];
+  for (const a of pr.accepts) { const why = await d.fits(a); if (why) reasons.push(why); else kept.push(a); }
+  if (!reasons.length) return untouched();
+  if (!kept.length) throw new SpotCheckBlockedError(d, "refused to sign: " + reasons[0]);
+  const headers = new Headers(res.headers);
+  if (fromHdr) headers.set("payment-required", encodeB64Json({ ...fromHdr, accepts: kept }));
+  return new Response(body && Array.isArray(body.accepts) ? JSON.stringify({ ...body, accepts: kept }) : text, { status: 402, statusText: res.statusText, headers });
 }
 
 function isSpotCheck(url, opts) {
@@ -331,13 +391,20 @@ function isSpotCheck(url, opts) {
   return [opts.endpoint, ...KNOWN_ENDPOINTS].some((e) => e && u.startsWith(e));
 }
 
+async function checkSigned(pay, url, method, decide) {
+  const p = b64json(pay);
+  const d = await decide(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null });
+  if (!d.allowed) throw new SpotCheckBlockedError(d);
+  const why = p && p.accepted ? await d.fits(p.accepted) : "";
+  if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);
+}
+
 /**
- * Wrap the fetch you hand to your x402 client. Requests without a payment header pass straight through;
- * a request carrying PAYMENT-SIGNATURE / X-PAYMENT is checked first and throws SpotCheckBlockedError on skip.
+ * Wrap the fetch you hand to your x402 client. Local rules by default (no network calls of its own).
  *   const pay = wrapFetchWithPayment(spotCheckFetch(fetch), client);
  */
 export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
-  const check = createSpotChecker({ fetch: fetchImpl, ...opts });
+  const decide = makeDecider({ fetch: fetchImpl, ...opts });
   return async function guardedFetch(input, init = {}) {
     const isReq = typeof Request !== "undefined" && input instanceof Request;
     const url = isReq ? input.url : String(input);
@@ -346,26 +413,18 @@ export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
     for (const h of PAY_HEADERS) pay = pay || headerOf(init.headers, h) || (isReq ? input.headers.get(h) : null);
     if (isSpotCheck(url, opts)) return fetchImpl(input, init);
     if (pay) {
-      // Last line: the signed payment must still fit the approved terms (cached check, no extra call).
-      const p = b64json(pay);
-      const d = await check(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null });
-      if (!d.allowed) throw new SpotCheckBlockedError(d);
-      const why = p && p.accepted ? await termsMismatch(p.accepted, d.approved) : "";
-      if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);
+      await checkSigned(pay, url, method, decide);
       return fetchImpl(input, init);
     }
     const res = await fetchImpl(input, init);
     if (res.status !== 402) return res;
-    return guard402(res, url, method, check);
+    return guard402(res, url, method, decide);
   };
 }
 
-/**
- * Axios: adds a request interceptor that checks any request carrying a payment header.
- *   const api = wrapAxiosWithPayment(spotCheckAxios(axios.create()), client);
- */
+/** Axios: request + response interceptors (register before the x402 interceptor). */
 export function spotCheckAxios(instance, opts = {}) {
-  const check = createSpotChecker(opts);
+  const decide = makeDecider(opts);
   const fullUrl = (config) => {
     const url = (config.baseURL && !/^https?:/i.test(config.url || "") ? config.baseURL.replace(/\/+$/, "") + "/" + String(config.url || "").replace(/^\/+/, "") : config.url) || "";
     return config.params ? url + (url.includes("?") ? "&" : "?") + new URLSearchParams(config.params).toString() : url;
@@ -376,14 +435,9 @@ export function spotCheckAxios(instance, opts = {}) {
     if (!pay) return config;
     const full = fullUrl(config);
     if (isSpotCheck(full, opts)) return config;
-    const p = b64json(pay);
-    const d = await check(full, { method: (config.method || "GET").toUpperCase(), intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null });
-    if (!d.allowed) throw new SpotCheckBlockedError(d);
-    const why = p && p.accepted ? await termsMismatch(p.accepted, d.approved) : "";
-    if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);
+    await checkSigned(pay, full, (config.method || "GET").toUpperCase(), decide);
     return config;
   });
-  // Registered before the x402 payment interceptor, so it sees the 402 first: check, then narrow or refuse.
   instance.interceptors.response.use(undefined, async (error) => {
     const res = error && error.response;
     const config = (error && error.config) || {};
@@ -396,12 +450,13 @@ export function spotCheckAxios(instance, opts = {}) {
     const fromHdr = hkey ? b64json(res.headers[hkey]) : null;
     const body = typeof res.data === "string" ? (() => { try { return JSON.parse(res.data); } catch { return null; } })() : res.data;
     const pr = fromHdr || body;
-    const d = await check(full, { method: (config.method || "GET").toUpperCase(), target: pr });
+    const d = await decide(full, { method: (config.method || "GET").toUpperCase(), target: pr && Array.isArray(pr.accepts) ? pr : null });
     if (!d.allowed) throw new SpotCheckBlockedError(d);
-    if (!d.approved) throw error;
-    if (!pr || !Array.isArray(pr.accepts)) throw new SpotCheckBlockedError(d, "refused to sign: unreadable 402");
-    const { kept, reasons } = await narrowRequirements(pr.accepts, d.approved);
-    if (!kept.length) throw new SpotCheckBlockedError(d, "refused to sign: " + (reasons[0] || "no requirement fits the approved payment"));
+    if (!pr || !Array.isArray(pr.accepts)) throw error;
+    const kept = [], reasons = [];
+    for (const a of pr.accepts) { const why = await d.fits(a); if (why) reasons.push(why); else kept.push(a); }
+    if (!reasons.length) throw error;
+    if (!kept.length) throw new SpotCheckBlockedError(d, "refused to sign: " + reasons[0]);
     if (fromHdr) res.headers[hkey] = encodeB64Json({ ...fromHdr, accepts: kept });
     if (body && Array.isArray(body.accepts)) res.data = { ...body, accepts: kept };
     throw error;
@@ -409,18 +464,65 @@ export function spotCheckAxios(instance, opts = {}) {
   return instance;
 }
 
-/** Plain function for agents/MCP tools: await checkBeforePay(url, { price, payTo, network, client }). */
+/** Plain function: await checkBeforePay(url, { accepts, price, payTo, network, mode }). Local needs `accepts` (the 402). */
 export async function checkBeforePay(url, o = {}) {
-  const check = createSpotChecker({ ...o, expected: () => ({ price: o.price, payTo: o.payTo, network: o.network }) });
-  return check(url, { method: o.method || "GET", target: o.accepts ? { accepts: o.accepts } : null });
+  const decide = makeDecider({ ...o, expected: () => ({ price: o.price, payTo: o.payTo, network: o.network }) });
+  return decide(url, { method: o.method || "GET", target: o.accepts ? { accepts: o.accepts } : null });
 }
 
 /** For agents that sign themselves: throws SpotCheckBlockedError unless `requirement` (one 402 accepts entry) fits. */
 export async function assertApprovedPayment(decision, requirement) {
   if (!decision.allowed) throw new SpotCheckBlockedError(decision);
-  const why = await termsMismatch(requirement, decision.approved);
+  const why = decision.fits ? await decision.fits(requirement) : await termsMismatch(requirement, decision.approved);
   if (why) throw new SpotCheckBlockedError(decision, "refused to sign: " + why);
   return true;
 }
 
+// ---------------------------------------------------------------- hook adapters
+/**
+ * x402 (x402-foundation/x402, @x402/core >= 2) onBeforePaymentCreation hook:
+ *   client.onBeforePaymentCreation(spotCheckBeforePaymentHook({ expected }))
+ * Context: { paymentRequired, selectedRequirements }. Returns { abort: true, reason } only on a skip code; never throws.
+ */
+export function spotCheckBeforePaymentHook(opts = {}) {
+  const decide = makeDecider(opts);
+  return async (ctx) => {
+    try {
+      const req = ctx && ctx.selectedRequirements;
+      const url = (ctx && ctx.paymentRequired && ctx.paymentRequired.resource && ctx.paymentRequired.resource.url) || (req && req.resource) || null;
+      if (!req || !url) return undefined;
+      const method = typeof opts.method === "function" ? await opts.method(url) : opts.method || "GET";
+      const d = await decide(url, { method, target: { accepts: [req] } });
+      if (!d.allowed) return { abort: true, reason: `x402-spotcheck: ${d.reason_code || d.verdict}: ${d.reason}` };
+      const why = await d.fits(req);
+      if (why) return { abort: true, reason: "x402-spotcheck: " + why };
+    } catch { /* unknown = pay */ }
+    return undefined;
+  };
+}
+
+/** Run before-payment hooks in order; the first abort wins (put your spending cap first). */
+export function composeBeforePaymentHooks(...hooks) {
+  const list = hooks.filter((h) => typeof h === "function");
+  return async (ctx) => {
+    for (const h of list) {
+      const r = await h(ctx);
+      if (r && r.abort) return r;
+    }
+    return undefined;
+  };
+}
+
+/**
+ * three.ws mcp-bridge: compose its buildSpendingCapHook (mcp-bridge/src/x402-axios-client.js) with this check.
+ * The spending cap runs first, so a payment over the cap never reaches the check.
+ *   client.onBeforePaymentCreation(threeWsSpendingCapThenSpotCheck(buildSpendingCapHook, { mode: "local" }))
+ */
+export function threeWsSpendingCapThenSpotCheck(buildSpendingCapHook, opts = {}) {
+  const cap = typeof buildSpendingCapHook === "function" ? buildSpendingCapHook() : null;
+  if (typeof cap !== "function") throw new TypeError("pass three.ws buildSpendingCapHook (the builder, not its result)");
+  return composeBeforePaymentHooks(cap, spotCheckBeforePaymentHook(opts));
+}
+
+export { judgeRequirement, judge402 };
 export default spotCheckFetch;

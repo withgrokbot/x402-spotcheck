@@ -6,7 +6,7 @@ import { x402Client, wrapFetchWithPayment } from "@x402/fetch";
 import { wrapAxiosWithPayment } from "@x402/axios";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
-import { spotCheckFetch, spotCheckAxios, SpotCheckBlockedError } from "../index.js";
+import { spotCheckFetch, spotCheckAxios, SpotCheckBlockedError } from "./service-shim.mjs";
 import { world, TERMS, USDC } from "./mock.mjs";
 
 const client = new x402Client().register("eip155:*", new ExactEvmScheme(privateKeyToAccount(generatePrivateKey())));
@@ -42,7 +42,7 @@ assert.equal((await wrapFetchWithPayment(spotCheckFetch(pw.fetch), counting)("ht
 assert.equal(signatures, 1);
 // b) 402 pays a different wallet -> no signature, no spend, reason + receipt in the error
 pw = world({ approve: TERMS, targetAccepts: [other] });
-await assert.rejects(wrapFetchWithPayment(spotCheckFetch(pw.fetch), counting)("https://good.test/api"), (e) => /refused to sign: pay_to differs/.test(String(e.message)) && /receipts\/sc-test/.test(String(e.message)));
+await assert.rejects(wrapFetchWithPayment(spotCheckFetch(pw.fetch), counting)("https://good.test/api"), (e) => /refused to sign: pay_to_mismatch: pay_to differs/.test(String(e.message)) && /receipts\/sc-test/.test(String(e.message)));
 assert.equal(signatures, 1, "@x402/fetch created no payment");
 assert.equal(pw.log.target.filter((t) => t.paid).length, 0);
 // c) mixed 402 -> the client can only pick the approved requirement
@@ -66,7 +66,7 @@ for (const [accepts, ok] of [[[good], true], [[{ ...good, amount: "20000" }], fa
     assert.equal((await api2.get("https://good.test/api")).status, 200);
     assert.equal(aw.log.target.find((t) => t.paid).accepted.payTo, TERMS.pay_to);
   } else {
-    await assert.rejects(api2.get("https://good.test/api"), /refused to sign: amount above approved/);
+    await assert.rejects(api2.get("https://good.test/api"), /refused to sign: price_mismatch: amount above approved/);
     assert.equal(signatures, n0, "@x402/axios created no payment");
     assert.equal(aw.log.target.filter((t) => t.paid).length, 0);
   }
