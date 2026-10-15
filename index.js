@@ -3,7 +3,7 @@
 // no tracking. Calling the 402xAgent service is opt-in (mode: "service"). It never sees or holds your keys.
 import { judgeRequirement, judge402, SKIP_CODES, BASE_MAINNET, SOLANA_MAINNET, caip } from "./rules.js";
 
-export const VERSION = "1.0.0";
+export const VERSION = "1.1.0";
 export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
 // Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
@@ -132,13 +132,21 @@ export const CHECK_FEE_TERMS = Object.freeze({
   payTo: "0x37cfCC8a29e9ff9458902B29E31E42dc7B718674",
   minAtomic: 10000, // $0.01
   maxAtomic: 250000, // $0.25
+  flatAtomic: 20000, // $0.02 flat check fee (402xAgent Worker 0.38.0+); accepted alongside the 1/10 rule (1.1.0)
 });
+/** True when `fee` (atomic) matches the documented terms for one of the target quotes: the flat $0.02 fee, or the older 1/10 rule. */
+export function isDocumentedCheckFee(fee, quotes) {
+  const f = Number(fee);
+  if (!Number.isFinite(f) || f <= 0) return false;
+  if (f === CHECK_FEE_TERMS.flatAtomic) return true;
+  return f >= CHECK_FEE_TERMS.minAtomic && f <= CHECK_FEE_TERMS.maxAtomic && (quotes || []).some((q) => Math.abs(f - expectedCheckFee(q)) <= 1);
+}
 // USDC (6 decimals) per mainnet the target may quote in; Solana mints are case-sensitive.
 const TARGET_USDC = { "eip155:8453": (a) => lc(a) === lc(CHECK_FEE_TERMS.asset), "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": (a) => a === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" };
 const MAX_FRACTION = 0.25;
 const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
 const usdToAtomic = (v) => Math.floor(Number(v) * 1e6 + 1e-6);
-/** Expected 402xAgent fee for a target quote (atomic): 1/10, $0.01 min, $0.25 cap, as the Worker computes it. */
+/** Legacy (Worker <= 0.37) expected 402xAgent fee for a target quote (atomic): 1/10, $0.01 min, $0.25 cap, as the Worker computes it. */
 export function expectedCheckFee(targetAtomic) {
   const q = Number(targetAtomic);
   const a = Number.isFinite(q) && q > 0 ? Math.round(q / 10) : CHECK_FEE_TERMS.minAtomic;
@@ -177,7 +185,7 @@ function makeAutoPay(cfg, base) {
       const fee = Number(acc.amount);
       const quotes = targetQuotes(target);
       if (!quotes.length) return { why: "target price unknown (needs a USDC quote on Base or Solana)" };
-      if (fee < CHECK_FEE_TERMS.minAtomic || fee > CHECK_FEE_TERMS.maxAtomic || !quotes.some((q) => Math.abs(fee - expectedCheckFee(q)) <= 1)) return { why: `fee ${fee} is not 1/10 of the target price` };
+      if (!isDocumentedCheckFee(fee, quotes)) return { why: `fee ${fee} is neither the flat ${CHECK_FEE_TERMS.flatAtomic} nor 1/10 of the target price` };
       if (fee > maxPer) return { why: `fee ${fee} above maxPerCheck` };
       if (fee > Math.min(...quotes) * frac) return { why: `fee ${fee} above ${frac} of the target price` };
       let persisted = 0;
@@ -525,4 +533,5 @@ export function threeWsSpendingCapThenSpotCheck(buildSpendingCapHook, opts = {})
 }
 
 export { judgeRequirement, judge402 };
+export { verifyReceipt, canonicalize, receiptSigningInput, RECEIPT_KEYS_URL } from "./receipt.js";
 export default spotCheckFetch;

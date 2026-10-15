@@ -29,9 +29,9 @@ function world(accepts = [acc()], spot = () => Response.json({ verdict: "pay", r
 const pay = (w, o) => fakeWrapFetchWithPayment(spotCheckFetch(w.fetch, o))("https://seller.test/api");
 
 test("version and defaults", () => {
-  assert.equal(VERSION, "1.0.0");
+  assert.equal(VERSION, "1.1.0");
   assert.equal(DEFAULT_TIMEOUT_MS, 1500);
-  assert.equal(JSON.parse(readFileSync(new URL("../package.json", import.meta.url))).version, "1.0.0");
+  assert.equal(JSON.parse(readFileSync(new URL("../package.json", import.meta.url))).version, "1.1.0");
 });
 test("vendored rules.js is spotcheck-rules 1.0.0 byte for byte", () => {
   const src = readFileSync(new URL("../rules.js", import.meta.url), "utf8").split("\n").slice(1).join("\n");

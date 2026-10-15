@@ -143,7 +143,7 @@ Agents that sign payments themselves can call `assertApprovedPayment(await check
 
 ## Cost
 
-You get 1 free check per client per UTC day. After that a check costs one tenth of the target's quoted price, minimum $0.01, cap $0.25, in USDC on Base via x402. Pass `payFetch` to pay for checks with your own x402 client, capped by `maxCheckUsd` (default $0.05):
+You get 5 free checks per client per UTC day. After that a check costs a flat $0.02 in USDC on Base via x402 (402xAgent 0.38.0+; amount `20000`, 6 decimals). Earlier 402xAgent versions charged one tenth of the target's quoted price (minimum $0.01, cap $0.25); 1.1.0 accepts both. Pass `payFetch` to pay for checks with your own x402 client, capped by `maxCheckUsd` (default $0.05):
 
 ```js
 const pay = wrapFetchWithPayment(spotCheckFetch(fetch, { mode: "service", payFetch: wrapFetchWithPayment(fetch, client) }), client);
@@ -153,7 +153,7 @@ If you don't pass `payFetch` and the free check is used up, the guard counts 402
 
 **First router: 1,000 free checks.** We give the first router or agent framework that integrates a client id with 1,000 full checks (paid-tier detail, no payment). Open an issue on this repo to ask for one.
 
-Routers: ask for a router client id and checks cost $0.001 each. They're billed as one $0.01 x402 payment per 10-check pack, and the other 9 are prepaid on that id. A router tier is needed because the facilitator charges about $0.002 per settlement, so a $0.001 payment per check would not cover it.
+Routers: ask for a router client id and checks are billed in packs: one x402 payment per 10-check pack, and the other 9 are prepaid on that id, so the facilitator's per-settlement charge is paid once per pack. From 402xAgent 0.38.0 a pack is $0.02 per check ($0.20 per 10).
 
 ## Verify a Bazaar result before paying (paid check)
 
@@ -190,6 +190,20 @@ const requirement = accepts.find((a) => a.network === decision.approved?.payment
 await assertApprovedPayment(decision, requirement); // throws "refused to sign: ..." if terms changed since the check
 // ...now pay with your x402 client
 ```
+
+## Verify a signed receipt (offline)
+
+From 402xAgent 0.38.0, paid check receipts carry `kid` and `signature`: an ed25519 signature (base64url) over the RFC 8785 (JCS) canonical JSON of the receipt with only `signature` removed. The public keys are at `https://api.402xagent.com/.well-known/402xagent-keys.json`. Unsigned receipts (older ones, or free checks) are reported as `valid: false, reason: "unsigned receipt ..."`; that is not a verdict change.
+
+```js
+import { verifyReceipt } from "x402-spotcheck"; // or "x402-spotcheck/receipt"
+const receipt = await (await fetch(decision.receiptUrl)).json();
+const r = await verifyReceipt(receipt);                 // fetches the key set once, picks the key by kid
+const r2 = await verifyReceipt(receipt, { publicKey }); // fully offline: pass the JWK (or { keys: [...] } or the raw base64url x)
+if (!r.valid) console.warn("receipt not verified:", r.reason);
+```
+
+`verifyReceipt` never throws for a bad receipt. `canonicalize` (JCS) and `receiptSigningInput` are exported too. It needs WebCrypto Ed25519 (Node 20+, current browsers, Workers, Deno).
 
 ## Options
 
@@ -244,5 +258,5 @@ const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
 }), client);
 ```
 
-It pays only when all of these hold: the fee is at most `maxPerCheck`; the fee plus today's spend (UTC, per instance) is at most `dailyCap`; the fee is at most 25% of the target's price (`maxFraction` can set a lower limit, not a higher one); the fee is exactly 1/10 of the target's USDC price ($0.01 to $0.25); and the 402 asks for x402 v2 `exact` USDC on Base to 402xAgent's documented pay_to. The fee is always paid on Base, including for Solana targets, so the client needs an EVM signer registered. Your fetch wrapper can sign only that one payment, once. To share the daily total across restarts, pass `spendStore: { get(day), add(day, atomic) }`. If any rule fails or anything errors, the check counts as unavailable, the same as without it. With `autoPayCheck` set, `payFetch` is not used for the fee. Without `autoPayCheck`, nothing changes.
+It pays only when all of these hold: the fee is at most `maxPerCheck`; the fee plus today's spend (UTC, per instance) is at most `dailyCap`; the fee is at most 25% of the target's price (`maxFraction` can set a lower limit, not a higher one); the fee is the flat $0.02 (`20000`, 1.1.0+) or exactly 1/10 of the target's USDC price ($0.01 to $0.25, the pre-0.38.0 Worker rule); and the 402 asks for x402 v2 `exact` USDC on Base to 402xAgent's documented pay_to. The fee is always paid on Base, including for Solana targets, so the client needs an EVM signer registered. Your fetch wrapper can sign only that one payment, once. To share the daily total across restarts, pass `spendStore: { get(day), add(day, atomic) }`. If any rule fails or anything errors, the check counts as unavailable, the same as without it. With `autoPayCheck` set, `payFetch` is not used for the fee. Without `autoPayCheck`, nothing changes.
 

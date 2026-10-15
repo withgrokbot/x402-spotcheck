@@ -5,7 +5,7 @@ import * as NEW from "./service-shim.mjs";
 import * as OLD from "./fixtures/index-0.4.1.mjs"; // the published 0.4.1 code, verbatim
 import { fakeWrapFetchWithPayment } from "./mock.mjs";
 
-const { spotCheckFetch, spotCheckAxios, checkBeforePay, termsString, DEFAULT_ENDPOINT, CHECK_FEE_TERMS, expectedCheckFee, SpotCheckBlockedError } = NEW;
+const { spotCheckFetch, spotCheckAxios, checkBeforePay, termsString, DEFAULT_ENDPOINT, CHECK_FEE_TERMS, expectedCheckFee, isDocumentedCheckFee, SpotCheckBlockedError } = NEW;
 const USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const SOL_NET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
 const SOL_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -191,6 +191,29 @@ test("terms: only the documented 402xAgent pay_to / asset / network, and exactly
   const unknown = world({ target: { ...baseAcc(), asset: "0x" + "77".repeat(20) }, spot402: [feeAcc(50000)] }); // non-USDC target: price unknown
   await run(unknown, { autoPayCheck: ap() });
   assert.equal(unknown.spotPaid(), 0);
+});
+
+test("1.1.0: flat $0.02 (20000) fee accepted alongside the 1/10 rule; other terms still enforced", async () => {
+  assert.equal(CHECK_FEE_TERMS.flatAtomic, 20000);
+  assert.equal(isDocumentedCheckFee(20000, [500000]), true);
+  assert.equal(isDocumentedCheckFee(20000, [9e9]), true);
+  assert.equal(isDocumentedCheckFee(50000, [500000]), true, "legacy 1/10 still accepted");
+  assert.equal(isDocumentedCheckFee(30000, [500000]), false);
+  const flat = world({ target: baseAcc("500000"), spot402: [feeAcc(20000)] });
+  await run(flat, { autoPayCheck: ap() });
+  assert.equal(flat.spotPaid(), 1);
+  assert.equal(flat.targetPaid(), 1);
+  const legacy = world({ target: baseAcc("500000"), spot402: [feeAcc(50000)] });
+  await run(legacy, { autoPayCheck: ap() });
+  assert.equal(legacy.spotPaid(), 1);
+  for (const bad of [feeAcc(20000, { payTo: "0x" + "66".repeat(20) }), feeAcc(20000, { network: "eip155:84532" }), feeAcc(30000)]) {
+    const w = world({ target: baseAcc("500000"), spot402: [bad] });
+    await run(w, { autoPayCheck: ap() });
+    assert.equal(w.spotPaid(), 0, JSON.stringify(bad));
+  }
+  const tooDear = world({ target: baseAcc("50000"), spot402: [feeAcc(20000)] }); // 20000 > 25% of 50000: the fraction cap still holds
+  await run(tooDear, { autoPayCheck: ap() });
+  assert.equal(tooDear.spotPaid(), 0);
 });
 
 // ---------------------------------------------------------------- errors -> fallback

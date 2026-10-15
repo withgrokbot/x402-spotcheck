@@ -12,7 +12,8 @@ export interface AutoPayCheckOptions {
   /** optional persistence of the daily total, in USDC atomic units */
   spendStore?: { get(day: string): number | Promise<number>; add(day: string, atomic: number): void | Promise<void> };
 }
-export declare const CHECK_FEE_TERMS: { readonly scheme: string; readonly network: string; readonly asset: string; readonly payTo: string; readonly minAtomic: number; readonly maxAtomic: number };
+export declare const CHECK_FEE_TERMS: { readonly scheme: string; readonly network: string; readonly asset: string; readonly payTo: string; readonly minAtomic: number; readonly maxAtomic: number; readonly flatAtomic: number };
+export declare function isDocumentedCheckFee(fee: number | string, targetQuotesAtomic: number[]): boolean;
 export declare function expectedCheckFee(targetAtomic: number | string): number;
 export interface SpotCheckOptions {
   /** 1.0.0: "local" (default: judge the 402 you received, no network calls) or "service" (ask 402xAgent; opt-in) */
@@ -65,6 +66,7 @@ export declare function composeBeforePaymentHooks(...hooks: Array<BeforePaymentH
 /** three.ws mcp-bridge: pass its buildSpendingCapHook; the cap runs first */
 export declare function threeWsSpendingCapThenSpotCheck(buildSpendingCapHook: () => BeforePaymentHook, opts?: SpotCheckOptions): BeforePaymentHook;
 export { judgeRequirement, judge402 } from "./rules.js";
+export { verifyReceipt, canonicalize, receiptSigningInput, RECEIPT_KEYS_URL } from "./receipt.js";
 export declare function spotCheckFetch<F extends (input: any, init?: any) => Promise<Response>>(fetchImpl?: F, opts?: SpotCheckOptions): F;
 export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions): A;
 export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string, o?: { method?: string; intent?: any; target?: { accepts: any[] } | null }) => Promise<SpotDecision>;

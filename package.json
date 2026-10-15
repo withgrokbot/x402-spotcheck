@@ -1,6 +1,6 @@
 {
   "name": "x402-spotcheck",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Check before you pay, for x402 clients and routers. Local rules by default (no network calls, no tracking); the 402xAgent service is opt-in. Unknown means pay; skip only with a reason code.",
   "type": "module",
   "main": "index.js",
@@ -17,11 +17,18 @@
     "./testkit": {
       "types": "./testkit.d.ts",
       "default": "./testkit.js"
+    },
+    "./receipt": {
+      "types": "./receipt.d.ts",
+      "default": "./receipt.js"
     }
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "receipt.js",
+    "receipt.d.ts",
+    "CHANGELOG.md",
     "rules.js",
     "rules.d.ts",
     "testkit.js",
@@ -31,7 +38,7 @@
     "examples"
   ],
   "scripts": {
-    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs",
+    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs && node --test test/receipt.test.mjs",
     "test:integration": "node test/integration.mjs"
   },
   "keywords": [
