@@ -3,7 +3,9 @@
 // no tracking. Calling the 402xAgent service is opt-in (mode: "service"). It never sees or holds your keys.
 import { judgeRequirement, judge402, SKIP_CODES, BASE_MAINNET, SOLANA_MAINNET, caip } from "./rules.js";
 
-export const VERSION = "1.1.0";
+import { runAfterPay, needsAfterPay } from "./after.js";
+export { afterPay, needsAfterPay, PAYMENT_STATUS_URL } from "./after.js";
+export const VERSION = "1.2.0";
 export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
 // Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
@@ -422,7 +424,16 @@ export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
     if (isSpotCheck(url, opts)) return fetchImpl(input, init);
     if (pay) {
       await checkSigned(pay, url, method, decide);
-      return fetchImpl(input, init);
+      if (!opts.afterPay) return fetchImpl(input, init); // 1.1.0 behaviour unless afterPay is opted in
+      let res;
+      try {
+        res = await fetchImpl(input, init);
+      } catch (error) {
+        await runAfterPay(opts.afterPay, { paymentHeader: pay, url, error, fetchImpl });
+        throw error; // fail-open: same error as without the hook, outcome on error.afterPay
+      }
+      if (needsAfterPay(res)) await runAfterPay(opts.afterPay, { paymentHeader: pay, url, result: res, fetchImpl });
+      return res;
     }
     const res = await fetchImpl(input, init);
     if (res.status !== 402) return res;

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0 (2026-10-16)
+
+- New opt-in `afterPay(ref, opts)`. It asks 402xAgent payment status (`POST https://api.402xagent.com/v1/products/payment-status`, needs 402xAgent 0.40.0) whether a payment landed. It returns `status` (landed | not_landed | pending | canceled | unknown), `safe_to_retry_same_payload` (always true) and `safe_to_resign`. `safe_to_resign` is true only on the service's strict two-source + expiry rule and only if the signed receipt verifies.
+- `afterPay` never throws. On a timeout, network error, 5xx, 402 or bad reply it returns `{ status: "unknown", safe_to_resign: false, error }`.
+- `spotCheckFetch(fetch, { afterPay: true | opts })`: a paid call that throws, answers 5xx, or answers 402 again triggers `afterPay`. The outcome lands on `response.afterPay` / `error.afterPay` and goes to `opts.onResult`.
+- Fail-open: the response or error is exactly what 1.1.0 returns. The hook uses the same inner fetch.
+- Off by default. Without `afterPay`, nothing changes and no extra calls are made.
+- New `needsAfterPay`, `PAYMENT_STATUS_URL`, and an `x402-spotcheck/after` subpath.
+- No verdict, reason-code or default changes.
+
 ## 1.1.0 (2026-10-15)
 
 - Service mode `autoPayCheck`: accepts the flat $0.02 check fee (`20000` atomic USDC, `CHECK_FEE_TERMS.flatAtomic`) that 402xAgent 0.38.0 charges, alongside the old 1/10 rule (min $0.01, cap $0.25), so it works before, during and after the Worker change. All other rules unchanged: documented pay_to/asset/network, `maxPerCheck`, `dailyCap`, fee at most 25% of the target price (`maxFraction`). New `isDocumentedCheckFee(fee, quotes)`.

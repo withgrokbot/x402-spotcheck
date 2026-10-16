@@ -16,6 +16,8 @@ export declare const CHECK_FEE_TERMS: { readonly scheme: string; readonly networ
 export declare function isDocumentedCheckFee(fee: number | string, targetQuotesAtomic: number[]): boolean;
 export declare function expectedCheckFee(targetAtomic: number | string): number;
 export interface SpotCheckOptions {
+  /** 1.2.0, opt-in: after a PAID call times out, answers 5xx or 402 again, ask 402xAgent payment status; outcome on `.afterPay` of the response/error. Fail-open. */
+  afterPay?: boolean | import("./after.js").AfterPayOptions;
   /** 1.0.0: "local" (default: judge the 402 you received, no network calls) or "service" (ask 402xAgent; opt-in) */
   mode?: "local" | "service";
   /** judge Solana mainnet too (default false: non-Base requirements pass through untouched) */
@@ -72,4 +74,5 @@ export declare function spotCheckAxios<A>(instance: A, opts?: SpotCheckOptions):
 export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string, o?: { method?: string; intent?: any; target?: { accepts: any[] } | null }) => Promise<SpotDecision>;
 export declare function checkBeforePay(url: string, o?: SpotCheckOptions & { price?: number; payTo?: string; network?: string; method?: string; accepts?: any[] }): Promise<SpotDecision>;
 export declare function readPaymentIntent(headerValue: string): { network: string | null; payTo: string | null; priceUsd: number | null } | null;
+export { afterPay, needsAfterPay, PAYMENT_STATUS_URL, AfterPayResult, AfterPayOptions, AfterPayRef } from "./after.js";
 export default spotCheckFetch;

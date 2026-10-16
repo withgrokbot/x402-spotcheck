@@ -10,7 +10,7 @@ A guard for x402 clients and routers. Right before your client signs, it judges 
 - It never sees your keys.
 
 ```bash
-npm i github:withgrokbot/x402-spotcheck#v1.0.0
+npm i github:withgrokbot/x402-spotcheck#v1.2.0
 ```
 
 ## One line
@@ -42,7 +42,7 @@ client.onBeforePaymentCreation(threeWsSpendingCapThenSpotCheck(buildSpendingCapH
 The verdict behavior (what pays, what skips and why) changes only on a major version. Minor and patch releases may add options (off by default), fix crashes or improve docs. They never turn a `pay` into a `skip`. Pin exactly:
 
 ```bash
-npm i github:withgrokbot/x402-spotcheck#v1.0.0       # package.json: "x402-spotcheck": "github:withgrokbot/x402-spotcheck#v1.0.0"
+npm i github:withgrokbot/x402-spotcheck#v1.2.0       # package.json: "x402-spotcheck": "github:withgrokbot/x402-spotcheck#v1.0.0"
 npm i github:withgrokbot/spotcheck-rules#v1.0.0      # the rules alone
 ```
 
@@ -260,3 +260,19 @@ const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
 
 It pays only when all of these hold: the fee is at most `maxPerCheck`; the fee plus today's spend (UTC, per instance) is at most `dailyCap`; the fee is at most 25% of the target's price (`maxFraction` can set a lower limit, not a higher one); the fee is the flat $0.02 (`20000`, 1.1.0+) or exactly 1/10 of the target's USDC price ($0.01 to $0.25, the pre-0.38.0 Worker rule); and the 402 asks for x402 v2 `exact` USDC on Base to 402xAgent's documented pay_to. The fee is always paid on Base, including for Solana targets, so the client needs an EVM signer registered. Your fetch wrapper can sign only that one payment, once. To share the daily total across restarts, pass `spendStore: { get(day), add(day, atomic) }`. If any rule fails or anything errors, the check counts as unavailable, the same as without it. With `autoPayCheck` set, `payFetch` is not used for the fee. Without `autoPayCheck`, nothing changes.
 
+
+## After you pay: `afterPay` (1.2.0, opt-in)
+
+A paid call can time out, answer 5xx, or answer 402 again after you sent the payment. Did the money move? Signing a **new** payment then is how agents double-pay. Retrying the **same** payment is always safe, because an EIP-3009 nonce is single-use.
+
+```js
+import { spotCheckFetch, afterPay } from "x402-spotcheck";
+const pay = wrapFetchWithPayment(spotCheckFetch(fetch, { afterPay: { onResult: (r) => log(r.status, r.safe_to_resign) } }), client);
+// or by hand, with the PAYMENT-SIGNATURE value you sent:
+const r = await afterPay({ paymentPayload, sellerUrl });
+if (!r.safe_to_resign) { /* do not sign a new payment; resend the same one, or claim with r.claim */ }
+```
+
+`status` is one of `landed`, `not_landed`, `pending`, `canceled` or `unknown`. `safe_to_resign` is true only when 402xAgent's two independent Base RPC sources agree the nonce is unused and validBefore has passed, and the signed receipt verifies. Anything else is `false`, including when the service is unreachable.
+
+It's off by default. With `afterPay` set, results are attached as `response.afterPay` / `error.afterPay`, and your response or error is never changed. It covers Base USDC (EIP-3009 exact) only, and uses the same 5 free checks a day as the check, then $0.02.
