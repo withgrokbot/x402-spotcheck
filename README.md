@@ -272,6 +272,10 @@ const guarded = spotCheckFetch(fetch, { mode: "service", apiKey: process.env.X40
 
 The key is sent only to 402xAgent (`Authorization: Bearer`), never to the seller. `afterPay` uses it too. Without `apiKey` nothing changes.
 
+## Test kit
+
+[`examples/test-kit`](examples/test-kit) runs a local mock seller with six 402 cases: good, price mismatch, wrong payTo, expired, malformed, and a double-pay retry. It prints each verdict and shows `afterPay` refusing to re-sign a payment that already landed. Run it with `node examples/test-kit/run.mjs`. No network, no payments.
+
 ## After you pay: `afterPay` (1.2.0, opt-in)
 
 A paid call can time out, answer 5xx, or answer 402 again after you sent the payment. Did the money move? Signing a **new** payment then is how agents double-pay. Retrying the **same** payment is always safe, because an EIP-3009 nonce is single-use.
