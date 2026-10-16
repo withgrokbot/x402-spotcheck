@@ -1,6 +1,13 @@
 # Changelog
 
 
+
+## 1.4.0 (2026-10-16)
+- New opt-in `checkExpiry` (`true` or `{ skewS = 30 (max 300), minWindowS = 5, now }`). When it's set, a 402 or a signed payment that has already expired, or expires within the skew, gets `skip` with the new reason `challenge_expired`.
+- What it reads: the signed authorization's `validBefore`; then `extra.validBefore` / `expiresAt` / `expiry` / `deadline` (seconds, ms or ISO); then `maxTimeoutSeconds` <= `minWindowS`. Unreadable values never block.
+- In service mode the flag sends `check_expiry=1&skew_s=` (402xAgent 0.42.0+).
+- Off by default, so default verdicts are unchanged: a no-change test covers 96 fixtures. The vendored rules are untouched.
+- Test kit: new `expiring-soon` case and `+checkExpiry` rows.
 ## 1.3.0 (2026-10-16)
 - Opt-in hosted mode: `apiKey` (`402x_live_<id>_<secret>`, shape-checked) on `spotCheckFetch` / `createSpotChecker` (service mode) and `afterPay`. Sent only to the 402xAgent endpoints as `Authorization: Bearer`; optional `endUser` id (`x-402xagent-end-user`). Hosted checks are billed on the integrator's monthly invoice, so no x402 per check.
 - Without `apiKey` nothing changes. No verdict changes.

@@ -12,9 +12,13 @@ export async function runKit({ quiet = false, hangMs = 2000, timeoutMs = 300 } =
   const mock = await startMockSeller({ hangMs });
   const rows = [];
   try {
-    for (const [path, c] of Object.entries(CASES)) {
+    const runs = [];
+    for (const [path, c] of Object.entries(CASES)) runs.push([path, c, false]);
+    for (const [path, c] of Object.entries(CASES)) if (c.withExpiry) runs.push([path, { ...c, ...c.withExpiry }, true]); // 1.4.0 opt-in rows
+    for (const [path, c, expiry] of runs) {
       let decision = null;
       const guarded = spotCheckFetch(fetch, {
+        ...(expiry ? { checkExpiry: true } : {}),
         expected: () => c.listing,
         onDecision: (d) => { decision = d; },
         afterPay: { url: mock.base + "/payment-status", publicKey: mock.publicKey },
@@ -29,7 +33,7 @@ export async function runKit({ quiet = false, hangMs = 2000, timeoutMs = 300 } =
         verdict = "skip"; code = e.decision?.reason_code ?? decision?.reason_code ?? null; reason = e.decision?.reason ?? e.message;
       }
       let ok = verdict === c.expect && code === c.code;
-      if (path === "/double-pay") {
+      if (path === "/double-pay" && !expiry) {
         // the agent pays; the seller takes the money but the response never comes back in time
         const hdr = paymentHeader(c.accepts[0], "landed-nonce");
         let ap = null;
@@ -39,25 +43,25 @@ export async function runKit({ quiet = false, hangMs = 2000, timeoutMs = 300 } =
         after = ap ? `afterPay: ${ap.status}, safe_to_resign=${ap.safe_to_resign}, receipt ${ap.receipt_verified ? "verified" : "NOT verified"} -> ${resign ? "re-sign" : "do NOT re-sign"}` : "afterPay: no answer";
         ok = ok && ap?.status === "landed" && ap.safe_to_resign === false && ap.receipt_verified === true && !resign && mock.stats.paidAttempts[path] === 1;
       }
-      if (path === "/expired") {
+      if (path === "/expired" && !expiry) {
         const ap = await afterPay({ paymentPayload: paymentHeader(c.accepts[0], "expired-nonce") }, { url: mock.base + "/payment-status", publicKey: mock.publicKey });
         after = `afterPay: ${ap.status}, safe_to_resign=${ap.safe_to_resign}, receipt ${ap.receipt_verified ? "verified" : "NOT verified"}`;
         ok = ok && ap.status === "not_landed" && ap.safe_to_resign === true && ap.receipt_verified === true;
       }
-      rows.push({ case: path.slice(1), expected: `${c.expect}/${c.code}`, verdict, code, ok, reason: String(reason).slice(0, 90), after });
+      rows.push({ case: path.slice(1) + (expiry ? " +checkExpiry" : ""), expected: `${c.expect}/${c.code}`, verdict, code, ok, reason: String(reason).slice(0, 90), after });
     }
   } finally {
     await mock.close();
   }
   if (!quiet) {
     const w = (s, n) => String(s).padEnd(n).slice(0, n);
-    console.log(w("case", 15) + w("expected", 22) + w("got", 22) + w("ok", 5) + "reason");
+    console.log(w("case", 28) + w("expected", 26) + w("got", 26) + w("ok", 5) + "reason");
     for (const r of rows) {
-      console.log(w(r.case, 15) + w(r.expected, 22) + w(`${r.verdict}/${r.code}`, 22) + w(r.ok ? "yes" : "NO", 5) + r.reason);
-      if (r.after) console.log(" ".repeat(15) + "└ " + r.after);
+      console.log(w(r.case, 28) + w(r.expected, 26) + w(`${r.verdict}/${r.code}`, 26) + w(r.ok ? "yes" : "NO", 5) + r.reason);
+      if (r.after) console.log(" ".repeat(28) + "└ " + r.after);
     }
     const bad = rows.filter((r) => !r.ok).length;
-    console.log(bad ? `\n${bad} unexpected result(s)` : `\nall ${rows.length} cases as expected (local mock, no network, no payments)`);
+    console.log(bad ? `\n${bad} unexpected result(s)` : `\nall ${rows.length} rows as expected (local mock, no network, no payments)`);
   }
   return rows;
 }

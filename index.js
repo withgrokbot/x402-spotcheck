@@ -4,8 +4,10 @@
 import { judgeRequirement, judge402, SKIP_CODES, BASE_MAINNET, SOLANA_MAINNET, caip } from "./rules.js";
 
 import { runAfterPay, needsAfterPay } from "./after.js";
+import { expiryOpts, judgeExpiry, EXPIRY_CODE } from "./expiry.js";
+export { judgeExpiry, EXPIRY_CODE, MAX_SKEW_S } from "./expiry.js";
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL } from "./after.js";
-export const VERSION = "1.3.0";
+export const VERSION = "1.4.0";
 export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
 // Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
@@ -244,7 +246,7 @@ function makeAutoPay(cfg, base) {
 // ---------------------------------------------------------------- 1.0.0: local by default, the service is opt-in
 // Verdict contract (changes only on a major version): skip blocks only with a reason code from
 // https://402xagent.com/rules.json; unknown, unchecked, timeout or error pays (unless you set onUnavailable: "block").
-export const SERVICE_SKIP_CODES = Object.freeze(["price_mismatch", "pay_to_mismatch", "network_mismatch", "asset_not_usdc", "network_unsupported", "ssrf_blocked", "bad_challenge", "ambiguous"]); // no_paywall is not here: we only ask after a 402, so it is a misprobe = unknown = pay
+export const SERVICE_SKIP_CODES = Object.freeze(["price_mismatch", "pay_to_mismatch", "network_mismatch", "asset_not_usdc", "network_unsupported", "ssrf_blocked", "bad_challenge", "ambiguous", "challenge_expired"]); // 1.4.0: challenge_expired only with checkExpiry // no_paywall is not here: we only ask after a 402, so it is a misprobe = unknown = pay
 export const DEFAULT_TIMEOUT_MS = 1500;
 const LOCAL_SKIP = new Set(SKIP_CODES);
 const SERVICE_SKIP = new Set(SERVICE_SKIP_CODES);
@@ -322,6 +324,8 @@ export function createSpotChecker(opts = {}) {
     if (exp.price != null) qs.set("claimed_price", String(exp.price));
     if (exp.payTo) qs.set("pay_to", exp.payTo);
     if (exp.network) qs.set("network", exp.network);
+    const eo = expiryOpts(opts.checkExpiry);
+    if (eo) { qs.set("check_expiry", "1"); qs.set("skew_s", String(eo.skewS)); } // 1.4.0 opt-in (402xAgent 0.42.0+)
     const key = qs.toString();
     const hit = cache.get(key);
     let res;
@@ -383,12 +387,31 @@ function makeDecider(opts) {
   checkApiKey(opts.apiKey);
   if (opts.autoPayCheck && opts.mode !== "service") throw new TypeError('autoPayCheck needs mode: "service"');
   const decide = opts.mode === "service" ? createSpotChecker(opts) : localDecider(opts);
+  const eo = expiryOpts(opts.checkExpiry);
   return async (url, o) => {
     let d;
     try { d = await decide(url, o); } catch (e) { d = passThrough(url, "check error: " + String((e && e.message) || e)); }
+    if (eo) d = withExpiry(d, o, eo); // 1.4.0 opt-in only
     if (opts.onDecision) { try { await opts.onDecision(d); } catch { /* observers never block */ } }
     return d;
   };
+}
+
+// 1.4.0: opt-in expiry layer on top of any decision. Skips when every judged accepts entry (or the signed
+// authorization) is expired; per-requirement fits() also reports expiry so expired options are narrowed away.
+function withExpiry(d, o = {}, eo) {
+  if (!d || d.allowed === false) return d;
+  const accepts = o.target && Array.isArray(o.target.accepts) ? o.target.accepts.filter(Boolean) : [];
+  const auth = o.authorization || null;
+  const whys = accepts.map((a) => judgeExpiry(a, auth, eo));
+  const authOnly = !accepts.length && auth ? judgeExpiry(null, auth, eo) : "";
+  const fitsBase = d.fits;
+  const fits = async (req) => (await fitsBase(req)) || judgeExpiry(req, auth, eo);
+  if ((accepts.length && whys.every(Boolean)) || authOnly) {
+    const why = authOnly || whys[0];
+    return { ...d, verdict: "skip", reason_code: EXPIRY_CODE, reason: why.slice(EXPIRY_CODE.length + 2), allowed: false, approved: null, fits };
+  }
+  return { ...d, fits };
 }
 
 // A 402 came back: decide now, before the x402 client can sign anything.
@@ -419,7 +442,8 @@ function isSpotCheck(url, opts) {
 
 async function checkSigned(pay, url, method, decide) {
   const p = b64json(pay);
-  const d = await decide(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null });
+  const auth = (p && p.payload && p.payload.authorization) || null;
+  const d = await decide(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null, authorization: auth });
   if (!d.allowed) throw new SpotCheckBlockedError(d);
   const why = p && p.accepted ? await d.fits(p.accepted) : "";
   if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);

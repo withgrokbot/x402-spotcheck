@@ -272,6 +272,10 @@ const guarded = spotCheckFetch(fetch, { mode: "service", apiKey: process.env.X40
 
 The key is sent only to 402xAgent (`Authorization: Bearer`), never to the seller. `afterPay` uses it too. Without `apiKey` nothing changes.
 
+## Expired terms: `checkExpiry` (1.4.0, opt-in)
+
+`spotCheckFetch(fetch, { checkExpiry: true })` skips (`challenge_expired`) a 402 or a signed payment that has already expired or expires within 30 s (`{ skewS }`, max 300). It reads the authorization's `validBefore`, then `extra.validBefore` / `expiresAt` / `expiry` / `deadline`, then `maxTimeoutSeconds` <= 5 s. It's off by default, and verdicts without it don't change.
+
 ## Test kit
 
 [`examples/test-kit`](examples/test-kit) runs a local mock seller with six 402 cases: good, price mismatch, wrong payTo, expired, malformed, and a double-pay retry. It prints each verdict and shows `afterPay` refusing to re-sign a payment that already landed. Run it with `node examples/test-kit/run.mjs`. No network, no payments.

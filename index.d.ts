@@ -20,6 +20,8 @@ export interface SpotCheckOptions {
   afterPay?: boolean | import("./after.js").AfterPayOptions;
   /** 1.3.0 hosted mode (opt-in): integrator key "402x_live_<id>_<secret>", sent only to 402xAgent as a Bearer token. */
   apiKey?: string;
+  /** 1.4.0 opt-in: skip ("challenge_expired") a 402 or signed payment that is expired or expires within skewS (default 30, max 300). Off by default. */
+  checkExpiry?: boolean | { skewS?: number; minWindowS?: number; now?: () => number };
   /** 1.3.0: optional opaque end-agent id sent with apiKey (402xAgent stores only a salted hash). */
   endUser?: string;
   /** 1.0.0: "local" (default: judge the 402 you received, no network calls) or "service" (ask 402xAgent; opt-in) */
@@ -81,3 +83,6 @@ export declare function readPaymentIntent(headerValue: string): { network: strin
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL, AfterPayResult, AfterPayOptions, AfterPayRef } from "./after.js";
 export default spotCheckFetch;
 export function checkApiKey(k: unknown): string | null;
+export declare const EXPIRY_CODE: "challenge_expired";
+export declare const MAX_SKEW_S: 300;
+export declare function judgeExpiry(req: any, authorization: { validBefore?: string | number } | null, opts: { skewS: number; minWindowS: number; now: () => number } | null): string;

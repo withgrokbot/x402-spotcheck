@@ -20,7 +20,7 @@ const svc = (reply, calls = []) => async (url, init = {}) => {
   throw new Error("unexpected " + url);
 };
 
-test("version 1.3.0", () => assert.equal(VERSION, "1.3.0"));
+test("version 1.4.0", () => assert.equal(VERSION, "1.4.0"));
 
 test("afterPay: posts the payment payload + seller url, returns the answer, verifies the signed receipt", async () => {
   const base = { status: "not_landed", safe_to_resign: true, safe_to_retry_same_payload: true };

@@ -11,10 +11,11 @@ const req = (over = {}) => ({ scheme: "exact", network: "eip155:8453", asset: US
 
 // path -> { accepts, listing (what the buyer expects), expect (verdict), code (reason code), note }
 export const CASES = {
-  "/good": { accepts: [req()], listing: { price: 0.01, payTo: SELLER }, expect: "pay", code: "price_ok" },
+  "/good": { accepts: [req()], listing: { price: 0.01, payTo: SELLER }, expect: "pay", code: "price_ok", withExpiry: { expect: "pay", code: "price_ok" } },
   "/price-mismatch": { accepts: [req({ amount: "50000" })], listing: { price: 0.01, payTo: SELLER }, expect: "skip", code: "price_mismatch" },
   "/wrong-payto": { accepts: [req({ payTo: OTHER })], listing: { price: 0.01, payTo: SELLER }, expect: "skip", code: "pay_to_mismatch" },
-  "/expired": { accepts: [req({ maxTimeoutSeconds: 0, extra: { name: "USD Coin", version: "2", validBefore: 1700000000 } })], listing: { price: 0.01, payTo: SELLER }, expect: "pay", code: "price_ok", note: "pre-pay rules don't judge expiry; afterPay does (an expired, unused authorization is not_landed and safe to re-sign)" },
+  "/expired": { accepts: [req({ maxTimeoutSeconds: 0, extra: { name: "USD Coin", version: "2", validBefore: 1700000000 } })], listing: { price: 0.01, payTo: SELLER }, expect: "pay", code: "price_ok", note: "default rules don't judge expiry; afterPay does (an expired, unused authorization is not_landed and safe to re-sign)", withExpiry: { expect: "skip", code: "challenge_expired" } },
+  "/expiring-soon": { accepts: [req({ extra: { name: "USD Coin", version: "2", validBefore: Math.floor(Date.now() / 1000) + 10 } })], listing: { price: 0.01, payTo: SELLER }, expect: "pay", code: "price_ok", withExpiry: { expect: "skip", code: "challenge_expired" } },
   "/malformed": { accepts: [req({ amount: "lots", payTo: "not-an-address" })], listing: { price: 0.01, payTo: SELLER }, expect: "skip", code: "bad_challenge" },
   "/double-pay": { accepts: [req()], listing: { price: 0.01, payTo: SELLER }, expect: "pay", code: "price_ok", note: "paid retry: the payment lands but the response times out" },
 };
