@@ -261,6 +261,17 @@ const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
 It pays only when all of these hold: the fee is at most `maxPerCheck`; the fee plus today's spend (UTC, per instance) is at most `dailyCap`; the fee is at most 25% of the target's price (`maxFraction` can set a lower limit, not a higher one); the fee is the flat $0.02 (`20000`, 1.1.0+) or exactly 1/10 of the target's USDC price ($0.01 to $0.25, the pre-0.38.0 Worker rule); and the 402 asks for x402 v2 `exact` USDC on Base to 402xAgent's documented pay_to. The fee is always paid on Base, including for Solana targets, so the client needs an EVM signer registered. Your fetch wrapper can sign only that one payment, once. To share the daily total across restarts, pass `spendStore: { get(day), add(day, atomic) }`. If any rule fails or anything errors, the check counts as unavailable, the same as without it. With `autoPayCheck` set, `payFetch` is not used for the fee. Without `autoPayCheck`, nothing changes.
 
 
+## Hosted mode: `apiKey` (1.3.0, opt-in)
+
+Routers and wallets with a 402xAgent integrator key can run checks billed on a monthly USDC invoice instead of per-call x402. There are 1,000 free hosted checks, then $0.02 each, and $0.01 for each check after the first 1,000 in a month. See https://402xagent.com/docs#hosted.
+
+```js
+import { spotCheckFetch } from "x402-spotcheck";
+const guarded = spotCheckFetch(fetch, { mode: "service", apiKey: process.env.X402XAGENT_KEY, endUser: agentId });
+```
+
+The key is sent only to 402xAgent (`Authorization: Bearer`), never to the seller. `afterPay` uses it too. Without `apiKey` nothing changes.
+
 ## After you pay: `afterPay` (1.2.0, opt-in)
 
 A paid call can time out, answer 5xx, or answer 402 again after you sent the payment. Did the money move? Signing a **new** payment then is how agents double-pay. Retrying the **same** payment is always safe, because an EIP-3009 nonce is single-use.

@@ -30,6 +30,7 @@ export async function afterPay(ref = {}, opts = {}) {
   try {
     const headers = { "content-type": "application/json", accept: "application/json" };
     if (opts.paymentHeader) headers["payment-signature"] = String(opts.paymentHeader);
+    if (opts.apiKey) headers.authorization = "Bearer " + String(opts.apiKey); // 1.3.0 hosted mode (opt-in)
     const r = await f(opts.url || PAYMENT_STATUS_URL, { method: "POST", headers, body: JSON.stringify(body), ...(ac ? { signal: ac.signal } : {}) });
     let j = null;
     try { j = await r.json(); } catch (_) { j = null; }
@@ -63,8 +64,8 @@ export function needsAfterPay(resOrError) {
 }
 
 /** Internal: run afterPay for a paid request and attach the outcome; never changes the result (fail-open). */
-export async function runAfterPay(cfg, { paymentHeader, url, result, error, fetchImpl }) {
-  const o = { ...(fetchImpl ? { fetch: fetchImpl } : {}), ...(cfg === true ? {} : cfg || {}) };
+export async function runAfterPay(cfg, { paymentHeader, url, result, error, fetchImpl, apiKey }) {
+  const o = { ...(fetchImpl ? { fetch: fetchImpl } : {}), ...(apiKey ? { apiKey } : {}), ...(cfg === true ? {} : cfg || {}) };
   let ap;
   try {
     ap = await afterPay({ paymentPayload: paymentHeader, sellerUrl: url }, o);

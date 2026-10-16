@@ -1,5 +1,9 @@
 # Changelog
 
+
+## 1.3.0 (2026-10-16)
+- Opt-in hosted mode: `apiKey` (`402x_live_<id>_<secret>`, shape-checked) on `spotCheckFetch` / `createSpotChecker` (service mode) and `afterPay`. Sent only to the 402xAgent endpoints as `Authorization: Bearer`; optional `endUser` id (`x-402xagent-end-user`). Hosted checks are billed on the integrator's monthly invoice, so no x402 per check.
+- Without `apiKey` nothing changes. No verdict changes.
 ## 1.2.0 (2026-10-16)
 
 - New opt-in `afterPay(ref, opts)`. It asks 402xAgent payment status (`POST https://api.402xagent.com/v1/products/payment-status`, needs 402xAgent 0.40.0) whether a payment landed. It returns `status` (landed | not_landed | pending | canceled | unknown), `safe_to_retry_same_payload` (always true) and `safe_to_resign`. `safe_to_resign` is true only on the service's strict two-source + expiry rule and only if the signed receipt verifies.

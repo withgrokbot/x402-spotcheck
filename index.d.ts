@@ -18,6 +18,10 @@ export declare function expectedCheckFee(targetAtomic: number | string): number;
 export interface SpotCheckOptions {
   /** 1.2.0, opt-in: after a PAID call times out, answers 5xx or 402 again, ask 402xAgent payment status; outcome on `.afterPay` of the response/error. Fail-open. */
   afterPay?: boolean | import("./after.js").AfterPayOptions;
+  /** 1.3.0 hosted mode (opt-in): integrator key "402x_live_<id>_<secret>", sent only to 402xAgent as a Bearer token. */
+  apiKey?: string;
+  /** 1.3.0: optional opaque end-agent id sent with apiKey (402xAgent stores only a salted hash). */
+  endUser?: string;
   /** 1.0.0: "local" (default: judge the 402 you received, no network calls) or "service" (ask 402xAgent; opt-in) */
   mode?: "local" | "service";
   /** judge Solana mainnet too (default false: non-Base requirements pass through untouched) */
@@ -76,3 +80,4 @@ export declare function checkBeforePay(url: string, o?: SpotCheckOptions & { pri
 export declare function readPaymentIntent(headerValue: string): { network: string | null; payTo: string | null; priceUsd: number | null } | null;
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL, AfterPayResult, AfterPayOptions, AfterPayRef } from "./after.js";
 export default spotCheckFetch;
+export function checkApiKey(k: unknown): string | null;
