@@ -72,7 +72,7 @@ export async function runAfterPay(cfg, { paymentHeader, url, result, error, fetc
   } catch (e) {
     ap = UNKNOWN("hook_error");
   }
-  try { if (typeof o.onResult === "function") await o.onResult(ap, { url, response: result || null, error: error || null }); } catch (_) {}
+  try { if (typeof o.onResult === "function") await o.onResult(ap, { url, response: result || null, error: error || null, paymentPayload: paymentHeader || null }); } catch (_) {}
   const target = error || result;
   try { if (target && typeof target === "object") Object.defineProperty(target, "afterPay", { value: ap, configurable: true, enumerable: false }); } catch (_) {}
   return ap;
