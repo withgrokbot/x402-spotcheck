@@ -357,3 +357,14 @@ const audit = createAudit({ store: await openAuditStore("./audit.db"), payloadKe
 await audit.close();
 ```
 This is opt-in. Without `store` the ledger stays in memory, exactly as in 1.5.x. Only one process can write to a given file. If the store is unavailable, payments are refused (`audit_store_unavailable`), except in observe mode.
+
+## Network and asset presets (unreleased)
+```js
+import { presets, networkConfig } from "x402-spotcheck/networks";
+createAudit({ networkConfig: networkConfig(presets.baseSepolia, presets.solanaDevnet), policy, payloadKey });
+```
+When a config is set, any network or asset outside it is denied before signing. Without one, the behaviour is 1.5.x.
+
+## Limits
+- **Back-to-back payments on Base Sepolia (observed 2026-10-20):** the x402.org facilitator rejected some calls sent right after the previous one, before that transfer had confirmed, with `invalid_exact_evm_transaction_failed`. The cause is unconfirmed. The audit layer keeps that reservation held, which is safe: no double spend, and the budget is not released until payment-status says `not_landed`. Workaround: wait for the previous transaction to confirm before the next payment (`scripts/e2e-sepolia.mjs` does this).
+- The SQLite ledger needs Node >= 22.13 (`node:sqlite`).

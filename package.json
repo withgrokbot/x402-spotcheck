@@ -33,6 +33,10 @@
     "./audit/sqlite": {
       "types": "./audit-sqlite.d.ts",
       "default": "./audit-sqlite.js"
+    },
+    "./networks": {
+      "types": "./networks.d.ts",
+      "default": "./networks.js"
     }
   },
   "files": [
@@ -54,11 +58,16 @@
     "LICENSE",
     "examples",
     "audit-sqlite.js",
-    "audit-sqlite.d.ts"
+    "audit-sqlite.d.ts",
+    "networks.js",
+    "networks.d.ts"
   ],
   "scripts": {
-    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs && node --test test/receipt.test.mjs && node --test test/after.test.mjs && node --test test/hosted.test.mjs && node --test test/test-kit.test.mjs && node --test test/expiry.test.mjs && node --test test/audit.test.mjs && node --test test/version-header.test.mjs && node --test test/audit-sqlite.test.mjs",
-    "test:integration": "node test/integration.mjs"
+    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs && node --test test/receipt.test.mjs && node --test test/after.test.mjs && node --test test/hosted.test.mjs && node --test test/test-kit.test.mjs && node --test test/expiry.test.mjs && node --test test/audit.test.mjs && node --test test/version-header.test.mjs && node --test test/audit-sqlite.test.mjs && node --test test/networks.test.mjs && node --test test/property.test.mjs",
+    "test:integration": "node test/integration.mjs",
+    "e2e:mock": "node scripts/e2e-mock.mjs",
+    "smoke:sepolia": "node scripts/sepolia-smoke.mjs",
+    "e2e:sepolia": "node scripts/e2e-sepolia.mjs"
   },
   "keywords": [
     "402xagent",
@@ -89,6 +98,15 @@
     "@x402/evm": "^2.28.0",
     "@x402/fetch": "^2.28.0",
     "axios": "^1.7.0",
+    "fast-check": "^3.23.2",
     "viem": "^2.21.0"
+  },
+  "peerDependencies": {
+    "@x402/core": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@x402/core": {
+      "optional": true
+    }
   }
 }

@@ -57,6 +57,7 @@ export interface Budgets {
 export declare function createBudgets(opts?: { dailyBudgetAtomic?: bigint | number | string | null; now?: () => number }): Budgets;
 
 export interface PolicyConfig {
+  networkConfig?: import("./networks.js").NetworkConfig | Record<string, import("./networks.js").NetworkEntry>;
   version?: string;
   perCallCeilingAtomic?: bigint | number | string | null;
   dailyBudgetAtomic?: bigint | number | string | null;
@@ -117,6 +118,8 @@ export interface AuditLayer {
   exportState(): Promise<{ entries: LedgerEntry[]; payloads: Record<string, any>; reservations: any[] }>;
 }
 export interface AuditOptions {
+  /** 1.6.0: opt-in network/asset config (x402-spotcheck/networks presets). Unknown networks/assets are denied. */
+  networkConfig?: import("./networks.js").NetworkConfig | Record<string, import("./networks.js").NetworkEntry>;
   agentId?: string | ((ctx: any) => string | Promise<string>);
   mode?: "enforce" | "observe";
   policy?: Policy | PolicyConfig;
