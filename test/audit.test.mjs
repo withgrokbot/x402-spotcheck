@@ -426,3 +426,41 @@ test("sealed payloads are bound to their reservation id", async () => {
   assert.equal(new TextDecoder().decode(pt), pay());
   await assert.rejects(crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode("rsv_other") }, k, ct));
 });
+
+test("reconcile flags an unreadable payload and keeps sweeping", async () => {
+  const fetch = async () => Response.json({ status: "unknown" });
+  const { layer, setNow } = make({ fetch, verify: false, payloadKey: crypto.getRandomValues(new Uint8Array(32)) });
+  const c1 = ctx("1000"), c2 = ctx("2000");
+  await layer.beforePayment(c1);
+  await layer.onPayment({ paymentPayload: pay({ amount: "1000", nonce: "0x" + "31".repeat(32) }), url: URL });
+  await layer.beforePayment(c2);
+  await layer.onPayment({ paymentPayload: pay({ amount: "2000", nonce: "0x" + "32".repeat(32) }), url: URL });
+  setNow(T0 + 10 * 60_000);
+  const subtle = crypto.subtle;
+  const real = subtle.decrypt;
+  let calls = 0;
+  subtle.decrypt = function (...a) { if (calls++ === 0) return Promise.reject(new Error("OperationError")); return real.apply(this, a); };
+  let r;
+  try { r = await layer.reconcile(); } finally { subtle.decrypt = real; }
+  assert.equal(calls, 2);
+  assert.equal(r.checked, 1);
+  const flags = layer.ledger.entries.filter((e) => e.type === "risk_flag" && e.reason === "payload_unreadable");
+  assert.equal(flags.length, 1);
+  assert.equal(layer.openReservations().length, 2);
+});
+
+test("exportState returns deep copies", async () => {
+  const { layer } = make({ payloadKey: crypto.getRandomValues(new Uint8Array(32)) });
+  await layer.beforePayment(ctx());
+  await layer.onPayment({ paymentPayload: pay(), url: URL });
+  const a = await layer.exportState();
+  const [id] = Object.keys(a.payloads);
+  a.payloads[id].ct = "AAAA";
+  a.entries[0].reason = "edited";
+  a.reservations[0].status = "edited";
+  const b = await layer.exportState();
+  assert.notEqual(b.payloads[id].ct, "AAAA");
+  assert.notEqual(b.entries[0].reason, "edited");
+  assert.equal(layer.openReservations().length, 1);
+  assert.equal((await layer.verifyChain()).valid, true);
+});

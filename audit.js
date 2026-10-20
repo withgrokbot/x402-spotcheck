@@ -741,7 +741,18 @@ export function createAudit(opts = {}) {
     for (const id of due) {
       const rec = budgets.get(id);
       if (!rec || rec.status !== "open") continue;
-      const payload = await getPayload(id);
+      let payload;
+      try { payload = await getPayload(id); }
+      catch (e) {
+        // One unreadable blob (wrong key, tampered, swapped) must not stop the sweep.
+        await lock(async () => {
+          rec.nextCheckAt = now() + backoffMs((rec.checks || 0) + 1);
+          if (rec.unreadableFlagged) return;
+          rec.unreadableFlagged = true;
+          await ledger.append({ type: "risk_flag", agent: rec.agent, url: rec.url, amount: rec.amount.toString(), payTo: rec.payTo, network: rec.network, id: rec.id, reason: "payload_unreadable", policyVersion: policy.version, ts: iso(now()) });
+        });
+        continue;
+      }
       if (!payload) {
         await lock(async () => {
           if (rec.escalated || rec.status !== "open") return;
@@ -839,7 +850,8 @@ export function createAudit(opts = {}) {
     exportChain: (range) => ledger.exportChain(range),
     verifyChain: () => ledger.verify(),
     async exportState() {
-      return { entries: ledger.exportChain().entries, payloads: Object.fromEntries(blobs), reservations: budgets.list().map((r) => ({ ...r, amount: r.amount.toString() })) };
+      // Deep copies: editing the export must never change live state.
+      return structuredClone({ entries: ledger.exportChain().entries, payloads: Object.fromEntries(blobs), reservations: budgets.list().map((r) => ({ ...r, amount: r.amount.toString() })) });
     },
   };
 }
