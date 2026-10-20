@@ -5,6 +5,7 @@
 import { afterPay } from "./after.js";
 import { canonicalize, verifyReceipt, RECEIPT_KEYS_URL } from "./receipt.js";
 import { caip, BASE_MAINNET, SOLANA_MAINNET, USDC } from "./rules.js";
+import { networkConfig as normaliseNetworkConfig, checkNetworkAsset } from "./networks.js";
 
 export const AUDIT_VERSION = "1";
 export const SKIPS_URL = "https://402xagent.com/v1/skips.json";
@@ -317,6 +318,7 @@ export function createPolicy(opts = {}) {
   const allow = opts.payToAllow ? new Set(opts.payToAllow.map(addrKey)) : null;
   const hits = new Map();
   const version = opts.version || "1";
+  const netCfg = opts.networkConfig ? normaliseNetworkConfig(opts.networkConfig) : null; // 1.6.0, opt-in
   function velocityList(agent, now) {
     const windowMs = opts.velocity?.windowMs ?? 60_000;
     const list = (hits.get(agent) || []).filter((t) => now - t < windowMs);
@@ -333,6 +335,7 @@ export function createPolicy(opts = {}) {
       const payTo = input.payTo ? String(input.payTo) : "";
       if (amount == null) return { allow: false, reason: "bad_amount", budgetId: agent };
       if (networks && !networks.has(network)) return { allow: false, reason: "network_not_allowed", budgetId: agent };
+      if (netCfg) { const c = checkNetworkAsset(netCfg, network, input.asset); if (!c.ok) return { allow: false, reason: c.reason, budgetId: agent }; }
       if (payTo && deny.has(addrKey(payTo))) return { allow: false, reason: "pay_to_denied", budgetId: agent };
       if (allow && (!payTo || !allow.has(addrKey(payTo)))) return { allow: false, reason: "pay_to_not_allowed", budgetId: agent };
       if (perCall != null && amount > perCall) return { allow: false, reason: "per_call_ceiling", budgetId: agent };
@@ -546,13 +549,17 @@ export function createAudit(opts = {}) {
         finally { flushStore(); }
       })
     : baseLock;
-  const risk = createRisk({ windowMs: opts.riskWindowMs, assetAllow: opts.assetAllow || opts.policy?.assetAllow || [] });
+  const netCfgOpt = opts.networkConfig ?? opts.policy?.networkConfig ?? null;
+  const netCfgNorm = netCfgOpt ? normaliseNetworkConfig(netCfgOpt) : null;
+  const netCfgAssets = netCfgNorm ? Object.values(netCfgNorm).flatMap((n) => Object.keys(n.assets)) : [];
+  const risk = createRisk({ windowMs: opts.riskWindowMs, assetAllow: [...(opts.assetAllow || opts.policy?.assetAllow || []), ...netCfgAssets] });
   const inner = opts.policy && typeof opts.policy.evaluate === "function"
     ? opts.policy
-    : createPolicy({ ...(opts.policy || {}), remaining: (id, at) => budgets.remaining(id, at) });
+    : createPolicy({ ...(opts.policy || {}), ...(netCfgOpt ? { networkConfig: netCfgOpt } : {}), remaining: (id, at) => budgets.remaining(id, at) });
   const policy = {
     version: inner.version || "1",
     evaluate(input) {
+      if (netCfgNorm) { const c = checkNetworkAsset(netCfgNorm, input.network, input.asset); if (!c.ok) return { allow: false, reason: c.reason, budgetId: input.agent }; }
       const features = risk.features(input.payTo, { network: input.network, asset: input.asset, now: input.now });
       if (features.action === "deny") return { allow: false, reason: features.reason, budgetId: input.agent };
       if (features.action === "step_up" && input.approved !== true) return { allow: false, reason: features.reason || "step_up_required", budgetId: input.agent };
