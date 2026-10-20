@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased (branch phase-a/version-header-sqlite-ledger, not published)
+- Network/asset config (`x402-spotcheck/networks`): presets `baseMainnet` (the implicit 1.5.x default), `baseSepolia`, `solanaDevnet`; `createAudit({ networkConfig })`. With a config set, unknown networks are denied (`network_not_configured`) and so are unknown assets (`asset_not_configured`). Solana reservations settle on a verified payment-status, or are rejected up front with `network_unsupported_for_settlement` when the entry has `settlement: false`. Without `networkConfig`, nothing changes.
+- `@x402/core` ^2.0.0 is now an optional peer dependency.
 - `afterPay` picks the proof header from `x402Version`: `2` sends `PAYMENT-SIGNATURE` and `1` sends `X-PAYMENT`. The version comes from `opts.x402Version` or from the decoded `paymentHeader`. Any other version returns `unknown` with reason `unsupported_x402_version`, and nothing is sent. New helpers: `proofHeaderForVersion` and `paymentHeaderVersion`.
 - Optional persistent ledger at `x402-spotcheck/audit/sqlite`: `createAudit({ store: await openAuditStore(path) })`. It uses `node:sqlite`, so it needs Node 22.13 or later; the package engines stay at >=18 and the in-memory ledger is still the default.
   - The chain, reservations and AES-GCM sealed payloads (AAD = reservation id) survive a restart. The chain is verified when the store opens, and plaintext payloads are never stored.

@@ -357,3 +357,10 @@ const audit = createAudit({ store: await openAuditStore("./audit.db"), payloadKe
 await audit.close();
 ```
 This is opt-in. Without `store` the ledger stays in memory, exactly as in 1.5.x. Only one process can write to a given file. If the store is unavailable, payments are refused (`audit_store_unavailable`), except in observe mode.
+
+## Network and asset presets (unreleased)
+```js
+import { presets, networkConfig } from "x402-spotcheck/networks";
+createAudit({ networkConfig: networkConfig(presets.baseSepolia, presets.solanaDevnet), policy, payloadKey });
+```
+When a config is set, any network or asset outside it is denied before signing. Without one, the behaviour is 1.5.x.

@@ -14,7 +14,7 @@ export async function startSeller({ cfg, mode = "mock", payTo = "0x" + "5e".repe
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const receiptKey = { ...publicKey.export({ format: "jwk" }), kid: "p0-mock" };
   const signR = (r) => ({ ...r, signature: sign(null, receiptSigningInput(r), privateKey).toString("base64url") });
-  const stats = { challenges: 0, paid: 0, rejected: 0, statusCalls: 0, headersSeen: [] };
+  const stats = { challenges: 0, paid: 0, rejected: 0, rejections: [], statusCalls: 0, headersSeen: [] };
   const srv = createServer(async (req, res) => {
     const url = `http://127.0.0.1:${srv.address().port}${req.url}`;
     const req402 = { scheme: "exact", network: x402Version === 1 ? "base-sepolia" : cfg.network, amount, ...(x402Version === 1 ? { maxAmountRequired: amount } : {}), asset: usdc.address, payTo, maxTimeoutSeconds: 120, resource: url, extra: usdc.eip712 };
@@ -34,7 +34,7 @@ export async function startSeller({ cfg, mode = "mock", payTo = "0x" + "5e".repe
     if (!header) { stats.challenges++; res.writeHead(402, { "content-type": "application/json", "payment-required": b64(required) }); return res.end(JSON.stringify(required)); }
     const proof = unb64(header);
     const auth = proof?.payload?.authorization;
-    const reject = (why) => { stats.rejected++; res.writeHead(402, { "content-type": "application/json", "payment-required": b64(required) }); res.end(JSON.stringify({ ...required, error: why })); };
+    const reject = (why) => { stats.rejected++; stats.rejections.push(String(why)); res.writeHead(402, { "content-type": "application/json", "payment-required": b64(required) }); res.end(JSON.stringify({ ...required, error: why })); };
     if (!auth) return reject("malformed_payment");
     if (String(auth.to).toLowerCase() !== payTo.toLowerCase() || String(auth.value) !== amount) return reject("terms_mismatch");
     if (settled.has(auth.nonce)) return reject("nonce_reused");
