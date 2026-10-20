@@ -335,7 +335,7 @@ const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
 }), client);
 ```
 
-**The ledger is in memory only.** Reservations, stored payloads, skip priors and the hash chain live in the process and are lost on restart. There is no persistence in 1.5.0; export the chain yourself (`audit.exportChain()`) if you need a record.
+**The ledger is in memory by default.** Without a store, reservations, stored payloads, skip priors and the hash chain live in the process and are lost on restart. 1.6.0 adds an opt-in SQLite ledger, `x402-spotcheck/audit/sqlite` (`createAudit({ store: await openAuditStore(path) })`, add `{ shared: true }` for several processes on one machine). The chain, reservations and sealed payloads then survive a restart and are verified when the store opens. It needs Node 22.13+ and a local disk (no NFS). See [docs/limits.md](docs/limits.md). To keep a record elsewhere, use `audit.exportChain()`.
 
 `payloadKey` must be a random 32-byte key (`crypto.getRandomValues(new Uint8Array(32))`), or a string that is already a high-entropy secret or derived with HKDF. A string is hashed once with unsalted SHA-256, so a passphrase is weak. Each sealed payload is bound to its reservation id (AES-GCM additional data).
 
