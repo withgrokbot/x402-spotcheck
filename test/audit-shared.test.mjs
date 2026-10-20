@@ -96,9 +96,10 @@ test("shared store: a single-writer file still refuses a second opener; shared m
 test("shared store: 4 processes x 60 contested keys, kill one mid-run, restart: no double booking", { skip: NO }, async () => {
   const path = tmp();
   const W = new URL("../scripts/p2-worker.mjs", import.meta.url).pathname;
-  const run = (wid, killAt = "") => new Promise((res) => { const p = spawn(process.execPath, ["--no-warnings", W, path, String(wid), "60", "1500", killAt]); let o = ""; p.stdout.on("data", (x) => (o += x)); p.on("exit", (code, sig) => res({ code, sig, o })); });
+  const run = (wid, killAt = "") => new Promise((res) => { const p = spawn(process.execPath, ["--no-warnings", W, path, String(wid), "60", "1500", killAt]); let o = "", err = ""; p.stdout.on("data", (x) => (o += x)); p.stderr.on("data", (x) => (err += x)); p.on("exit", (code, sig) => res({ code, sig, o, err })); });
   const rs = await Promise.all([run(0), run(1), run(2, "30"), run(3)]);
-  assert.equal(rs[2].sig, "SIGKILL");
+  assert.equal(rs[2].sig, "SIGKILL", rs[2].err);
+  for (const r of rs) assert.ok(r.sig || r.code === 0, r.err);
   assert.ok(rs.filter((r) => !r.sig).every((r) => r.code === 0));
   assert.equal((await run(2)).code, 0);
   const d = new sqlite.DatabaseSync(path);

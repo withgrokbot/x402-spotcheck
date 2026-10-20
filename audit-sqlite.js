@@ -53,6 +53,10 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
   const { DatabaseSync } = await sqlite();
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   let db;
+  // Shared mode: several processes may open (and create) the file at once; WAL setup and the schema step can see
+  // SQLITE_BUSY outside busy_timeout. Retry those until busyTimeoutMs; anything else fails closed at once.
+  const deadline = Date.now() + Math.max(0, Number(busyTimeoutMs) | 0);
+  for (let attempt = 0; ; attempt++) {
   try {
     db = new DatabaseSync(path);
     db.exec(`PRAGMA busy_timeout = ${Math.max(0, Number(busyTimeoutMs) | 0)};`);
@@ -75,9 +79,16 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
     db.prepare("INSERT OR IGNORE INTO meta (k, v) VALUES ('rev', '0')").run();
     db.prepare("UPDATE meta SET v = '2' WHERE k = 'schema'").run();
     db.exec("COMMIT");
+    break;
   } catch (e) {
     try { db?.close(); } catch { /* ignore */ }
+    db = null;
+    if (shared && /busy|locked/i.test(String(e?.message || e)) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, Math.min(200, 5 * 2 ** Math.min(attempt, 5)) + Math.random() * 10));
+      continue;
+    }
     throw new StoreUnavailableError(`audit store unavailable (${path}): ${e?.message || e}`, e);
+  }
   }
 
   const q = {
