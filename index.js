@@ -388,11 +388,11 @@ function makeDecider(opts) {
   if (opts.autoPayCheck && opts.mode !== "service") throw new TypeError('autoPayCheck needs mode: "service"');
   const decide = opts.mode === "service" ? createSpotChecker(opts) : localDecider(opts);
   const eo = expiryOpts(opts.checkExpiry);
-  return async (url, o) => {
+  return async (url, o, ctx) => {
     let d;
     try { d = await decide(url, o); } catch (e) { d = passThrough(url, "check error: " + String((e && e.message) || e)); }
     if (eo) d = withExpiry(d, o, eo); // 1.4.0 opt-in only
-    if (opts.onDecision) { try { await opts.onDecision(d); } catch { /* observers never block */ } }
+    if (opts.onDecision) { try { await (ctx === undefined ? opts.onDecision(d) : opts.onDecision(d, ctx)); } catch { /* observers never block */ } }
     return d;
   };
 }
@@ -557,7 +557,7 @@ export function spotCheckBeforePaymentHook(opts = {}) {
       const url = (ctx && ctx.paymentRequired && ctx.paymentRequired.resource && ctx.paymentRequired.resource.url) || (req && req.resource) || null;
       if (!req || !url) return undefined;
       const method = typeof opts.method === "function" ? await opts.method(url) : opts.method || "GET";
-      const d = await decide(url, { method, target: { accepts: [req] } });
+      const d = await decide(url, { method, target: { accepts: [req] } }, ctx);
       if (!d.allowed) return { abort: true, reason: `x402-spotcheck: ${d.reason_code || d.verdict}: ${d.reason}` };
       const why = await d.fits(req);
       if (why) return { abort: true, reason: "x402-spotcheck: " + why };

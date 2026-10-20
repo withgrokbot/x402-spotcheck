@@ -74,6 +74,24 @@ function b64ToBytes(s) {
   const bin = atob(String(s));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
+// Deterministic id for a skip row without id/receipt, so re-ingesting the same feed does not double-count it.
+function skipRowId(raw) {
+  const basis = canonicalize({
+    url: raw.url ?? null, pay_to: raw.pay_to ?? raw.payTo ?? null, network: raw.network ?? null,
+    reason: raw.reason ?? raw.reason_code ?? null, timestamp: raw.timestamp ?? raw.ts ?? null,
+  });
+  return "skip_" + fnv64(basis);
+}
+function fnv64(str) {
+  // Two independent 32-bit FNV-1a lanes; synchronous so ingest stays sync. Not a security hash, only a dedupe key.
+  let a = 0x811c9dc5, b = 0x01000193 ^ 0x5bd1e995;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c ^ (i & 0xff), 0x5bd1e995) >>> 0;
+  }
+  return a.toString(16).padStart(8, "0") + b.toString(16).padStart(8, "0");
+}
 function newId(prefix) {
   const b = new Uint8Array(8);
   crypto.getRandomValues(b);
@@ -344,7 +362,7 @@ function createRisk({ windowMs = RISK_WINDOW_MS, assetAllow = [] } = {}) {
       let added = 0;
       for (const raw of list || []) {
         if (!raw || raw.verdict && raw.verdict !== "skip") continue;
-        const id = String(raw.id || raw.receipt || newId("skip_"));
+        const id = String(raw.id || raw.receipt || skipRowId(raw));
         if (rows.has(id)) continue;
         const code = skipReasonCode(raw);
         const ts = Date.parse(raw.timestamp || raw.ts || "") || now;
@@ -402,13 +420,14 @@ async function aesFrom(secret) {
   if (raw.length !== 32) throw new TypeError("payloadKey must be a string or 32 bytes");
   return subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
-async function seal(key, text) {
+// The reservation id is bound as AES-GCM additionalData, so a blob cannot be swapped onto another reservation.
+async function seal(key, text, aad) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(text)));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(String(aad)) }, key, new TextEncoder().encode(text)));
   return { v: 1, iv: bytesToB64(iv), ct: bytesToB64(ct) };
 }
-async function open(key, blob) {
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64ToBytes(blob.iv) }, key, b64ToBytes(blob.ct));
+async function open(key, blob, aad) {
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64ToBytes(blob.iv), additionalData: new TextEncoder().encode(String(aad)) }, key, b64ToBytes(blob.ct));
   return new TextDecoder().decode(pt);
 }
 
@@ -514,13 +533,13 @@ export function createAudit(opts = {}) {
 
   async function putPayload(id, payload) {
     const key = await aesReady;
-    if (key) blobs.set(id, await seal(key, String(payload)));
+    if (key) blobs.set(id, await seal(key, String(payload), id));
     else secrets.set(id, String(payload));
   }
   async function getPayload(id) {
     if (blobs.has(id)) {
       const key = await aesReady;
-      return key ? open(key, blobs.get(id)) : null;
+      return key ? open(key, blobs.get(id), id) : null;
     }
     return secrets.get(id) || null;
   }
@@ -544,16 +563,23 @@ export function createAudit(opts = {}) {
   // Evaluate and reserve under one lock so concurrent calls cannot share one remaining budget.
   const beforePayment = (ctx) => lock(() => innerHook(ctx));
 
+  function boundOpen(ctx) {
+    if (!ctx || typeof ctx !== "object") return null;
+    const id = bound.get(ctx) || ctx.audit?.reservationId || null;
+    const rec = id ? budgets.get(id) : null;
+    return rec && rec.status === "open" ? rec : null;
+  }
+  // Fallback when no reservation id reached us: the newest open reservation for this URL.
+  function newestOpenFor(...urls) {
+    const want = urls.filter(Boolean);
+    if (!want.length) return null;
+    return budgets.listOpen().filter((r) => want.includes(r.url)).sort((a, b) => b.n - a.n)[0] || null;
+  }
+
   async function releaseOpen(ctx, info) {
     return lock(async () => {
       let rec = null;
-      const id = ctx && bound.get(ctx);
-      if (id) rec = budgets.get(id);
-      if (!rec || rec.status !== "open") {
-        const url = requirementOf(ctx)?.url;
-        const open = budgets.listOpen().filter((r) => !url || r.url === url);
-        rec = open.length === 1 ? open[0] : null;
-      }
+      rec = boundOpen(ctx) || newestOpenFor(requirementOf(ctx)?.url);
       if (!rec || rec.status !== "open") return null;
       budgets.release(rec.id, { resign: "never", status: "skip" });
       await ledger.append({
@@ -564,7 +590,8 @@ export function createAudit(opts = {}) {
     });
   }
 
-  async function onDecision(d) {
+  // ctx is the before-payment hook context, when the caller passes it (spotCheckBeforePaymentHook does).
+  async function onDecision(d, ctx) {
     if (!d || typeof d !== "object") return;
     try {
       await lock(async () => {
@@ -573,10 +600,9 @@ export function createAudit(opts = {}) {
           spotcheck_receipt: d.receiptUrl || null, policyVersion: policy.version, ts: iso(now()),
           receipt_verified: null,
         });
-        if (d.allowed === false && d.url) {
-          const open = budgets.listOpen().filter((r) => r.url === d.url);
-          if (open.length === 1) {
-            const rec = open[0];
+        if (d.allowed === false) {
+          const rec = boundOpen(ctx) || newestOpenFor(d.url, requirementOf(ctx)?.url);
+          if (rec) {
             budgets.release(rec.id, { resign: "never", status: "skip" });
             await ledger.append({
               type: "released", agent: rec.agent, url: rec.url, amount: rec.amount.toString(), payTo: rec.payTo, network: rec.network, asset: rec.asset,
@@ -706,7 +732,8 @@ export function createAudit(opts = {}) {
     const due = await lock(() => budgets.listOpen().filter((r) => {
       if (now() < (r.nextCheckAt || 0)) return false;
       if (!hasPayload(r.id)) return r.openedAt + ESCALATE_AFTER_MS <= now();
-      if (r.validBefore == null) return false;
+      // No validBefore (Solana, non-EIP-3009): ask once the reservation is RECONCILE_AFTER_MS old.
+      if (r.validBefore == null) return now() >= r.openedAt + RECONCILE_AFTER_MS;
       return now() >= r.validBefore * 1000 + RECONCILE_AFTER_MS;
     }).map((r) => r.id));
     const escalations = [];
@@ -738,8 +765,9 @@ export function createAudit(opts = {}) {
       await lock(async () => {
         if (rec.status !== "open") return;
         await applyResult(rec, checkedResult, "reconcile");
-        const age = rec.unknownSince ? now() - rec.unknownSince : 0;
-        if (rec.status === "open" && rec.unknownSince && age >= ESCALATE_AFTER_MS && !rec.escalated) {
+        const since = rec.unknownSince || (rec.validBefore == null ? rec.openedAt : 0);
+        const age = since ? now() - since : 0;
+        if (rec.status === "open" && since && age >= ESCALATE_AFTER_MS && !rec.escalated) {
           rec.escalated = true;
           await ledger.append({ type: "risk_flag", agent: rec.agent, url: rec.url, amount: rec.amount.toString(), payTo: rec.payTo, network: rec.network, id: rec.id, reason: "unresolved_24h", status_receipt: statusIdOf(checkedResult), policyVersion: policy.version, ts: iso(now()) });
           escalations.push({ reservationId: id, reason: "unresolved_24h", url: rec.url, status: checkedResult.status, status_receipt: statusIdOf(checkedResult) });
@@ -761,7 +789,12 @@ export function createAudit(opts = {}) {
   }
 
   async function ingestSkips(list) {
-    const rows = Array.isArray(list) ? list : await fetchSkips({ fetch: opts.fetch, url: opts.skipsUrl });
+    let rows = list;
+    if (!Array.isArray(rows)) {
+      // A feed outage is not a payment problem: priors stay as they were and the caller gets the error back.
+      try { rows = await fetchSkips({ fetch: opts.fetch, url: opts.skipsUrl }); }
+      catch (e) { return { added: 0, error: String((e && e.message) || e), view: risk.view(now()) }; }
+    }
     return lock(async () => {
       const added = risk.ingest(rows, now());
       const paid = paidKeys();
@@ -819,20 +852,32 @@ function normalizeKeys(publicKey) {
   return { keys: [publicKey] };
 }
 
-/** Pull /v1/skips.json, following `next`, and return the skip rows. */
+/** Pull /v1/skips.json, following same-origin `next` links, and return the skip rows. Rejects on HTTP or shape errors; `ingestSkips()` turns that into `{ added: 0, error }`. */
 export async function fetchSkips({ fetch: fetchImpl = globalThis.fetch, url = SKIPS_URL, maxPages = 20 } = {}) {
   const out = [];
   const seen = new Set();
+  const origin = new URL(url).origin;
   let next = url;
+  let current = url;
   while (next && seen.size < maxPages) {
     if (seen.has(next)) break;
     seen.add(next);
+    current = next;
     const res = await fetchImpl(next, { headers: { accept: "application/json" } });
     if (!res.ok) throw new Error("skips HTTP " + res.status);
     const body = await res.json();
-    const rows = Array.isArray(body) ? body : body.skips || body.receipts || [];
+    if (!body || typeof body !== "object") throw new TypeError("skips feed: body is not an object");
+    const rows = Array.isArray(body) ? body : body.skips ?? body.receipts ?? [];
+    if (!Array.isArray(rows)) throw new TypeError("skips feed: skips is not an array");
     out.push(...rows);
-    next = body.next || null;
+    next = null;
+    if (!Array.isArray(body) && typeof body.next === "string" && body.next) {
+      // Only follow `next` on the same origin as the first page.
+      try {
+        const u = new URL(body.next, current);
+        if (u.origin === origin) next = u.href;
+      } catch { /* bad next link: stop paging */ }
+    }
   }
   return out;
 }

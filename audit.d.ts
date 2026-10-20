@@ -97,12 +97,13 @@ export interface AuditLayer {
   ledger: Ledger;
   risk: { features(payTo: string, opts?: { network?: string | null; asset?: string | null; now?: number }): { action: "deny" | "step_up" | "allow"; reason: string | null }; view(now?: number): { payTo: any[]; host: any[] } };
   beforePayment: AuditHook;
-  onDecision(d: any): Promise<void>;
+  /** ctx: the before-payment hook context; when given, the reservation made for that ctx is the one released on a skip. */
+  onDecision(d: any, ctx?: any): Promise<void>;
   onPayment(info: { paymentPayload?: string; url?: string | null }): Promise<void>;
   onAfterPay(result: any, ctx?: { url?: string; paymentPayload?: string | null }): Promise<SettlementAdvice>;
   composeWith(spotHook: AuditHook): AuditHook;
   reconcile(): Promise<{ checked: number; escalations: any[] }>;
-  ingestSkips(list?: any[]): Promise<{ added: number; view: { payTo: any[]; host: any[] } }>;
+  ingestSkips(list?: any[]): Promise<{ added: number; error?: string; view: { payTo: any[]; host: any[] } }>;
   mayResign(id: string): boolean;
   openReservations(): any[];
   decision(d: any): Promise<void>;
@@ -119,6 +120,7 @@ export interface AuditOptions {
   ledger?: Ledger;
   dailyBudgetAtomic?: bigint | number | string | null;
   failClosedAboveAtomic?: bigint | number | string;
+  /** Use a random 32-byte key (Uint8Array), or a string that is itself a high-entropy secret (or HKDF-derived). A string is SHA-256 hashed once, unsalted: never pass a passphrase. */
   payloadKey?: string | Uint8Array;
   publicKey?: any;
   apiKey?: string;

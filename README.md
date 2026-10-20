@@ -306,7 +306,7 @@ import { createAudit } from "x402-spotcheck/audit";
 
 const audit = createAudit({
   agentId: "agent-7",
-  payloadKey: process.env.AUDIT_PAYLOAD_KEY, // encrypts PAYMENT-SIGNATURE; the hash chain never contains it
+  payloadKey: process.env.AUDIT_PAYLOAD_KEY, // random 32-byte key; encrypts PAYMENT-SIGNATURE; the hash chain never contains it
   policy: {
     version: "2026-10-14.3",
     perCallCeilingAtomic: 100_000, // $0.10
@@ -333,6 +333,12 @@ const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
 }), client);
 ```
 
-`mode: "observe"` logs would-be denials and does not reserve or abort. If policy or the ledger throws, a payment above `failClosedAboveAtomic` (default `0`) is denied and a smaller one is allowed. Both are written down. `audit.mayResign(id)` is true only when payment-status verified `not_landed` and `safe_to_resign`. Landed, pending, unknown, canceled, and any unverified receipt never re-sign. Pending and unknown stay open for `audit.reconcile()`, which waits until `validBefore` + 120s and pages `onEscalate` when a row is still unknown after 24h. `audit.ingestSkips()` reads `https://402xagent.com/v1/skips.json` and turns those rows into payTo priors (a `pay_to_mismatch` or a testnet-listed mainnet charge denies; a first price or network mismatch asks for `auditApproved` on the hook context).
+**The ledger is in memory only.** Reservations, stored payloads, skip priors and the hash chain live in the process and are lost on restart. There is no persistence in 1.5.0; export the chain yourself (`audit.exportChain()`) if you need a record.
+
+`payloadKey` must be a random 32-byte key (`crypto.getRandomValues(new Uint8Array(32))`), or a string that is already a high-entropy secret or derived with HKDF. A string is hashed once with unsalted SHA-256, so a passphrase is weak. Each sealed payload is bound to its reservation id (AES-GCM additional data).
+
+`spotCheckBeforePaymentHook` passes its hook context to `onDecision(d, ctx)`, so a skip releases exactly the reservation made for that call. Without a context (for example `spotCheckFetch`), the newest open reservation for the URL is released.
+
+`mode: "observe"` logs would-be denials and does not reserve or abort. If policy or the ledger throws, a payment above `failClosedAboveAtomic` (default `0`) is denied and a smaller one is allowed. Both are written down. `audit.mayResign(id)` is true only when payment-status verified `not_landed` and `safe_to_resign`. Landed, pending, unknown, canceled, and any unverified receipt never re-sign. Pending and unknown stay open for `audit.reconcile()`, which waits until `validBefore` + 120s (or 120s after the reservation when the payload has no `validBefore`, e.g. Solana) and pages `onEscalate` when a row is still unknown after 24h. `audit.ingestSkips()` reads `https://402xagent.com/v1/skips.json` (following `next` only on the same origin; a feed failure resolves `{ added: 0, error }`) and turns those rows into payTo priors (a `pay_to_mismatch` or a testnet-listed mainnet charge denies; a first price or network mismatch asks for `auditApproved` on the hook context).
 
 A clean HTTP 200 does not call `afterPay` (that hook is for timeouts, 5xx, and a second 402). `onPayment` stores the payload, and the reconciler settles it once the authorization is old enough to ask about. Checks and payment-status share the 5 free calls per UTC day.

@@ -46,7 +46,8 @@ export interface SpotCheckOptions {
   onUnavailable?: "allow" | "block";
   /** your listing for this URL: the price / payTo / network you expect */
   expected?: (url: string, intent: { network: string | null; payTo: string | null; priceUsd: number | null } | null) => { price?: number; payTo?: string; network?: string } | undefined | Promise<{ price?: number; payTo?: string; network?: string } | undefined>;
-  onDecision?: (d: SpotDecision) => void | Promise<void>;
+  /** ctx is passed only by spotCheckBeforePaymentHook (the hook context). */
+  onDecision?: (d: SpotDecision, ctx?: any) => void | Promise<void>;
   /** 1.5.0 opt-in: the PAYMENT-SIGNATURE about to be sent, after the pre-sign check has passed. Observers never block. */
   onPayment?: (info: { paymentPayload: string; url: string; method: string }) => void | Promise<void>;
   cacheTtlMs?: number;

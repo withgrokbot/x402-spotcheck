@@ -322,3 +322,107 @@ test("spotCheckFetch onPayment stores the payload without changing a paid 200", 
   assert.equal(AUDIT_VERSION, "1");
   assert.equal((await layer.verifyChain()).valid, true);
 });
+
+test("a skip releases the reservation for its own call when two are open on one URL", async () => {
+  const { layer } = make({});
+  const ca = ctx("1000"), cb = ctx("2000");
+  await Promise.all([layer.beforePayment(ca), layer.beforePayment(cb)]);
+  assert.equal(layer.openReservations().length, 2);
+  const idA = ca.audit.reservationId;
+  await layer.onDecision({ allowed: false, url: URL, verdict: "skip", reason_code: "price_mismatch" }, ca);
+  const open = layer.openReservations();
+  assert.equal(open.length, 1);
+  assert.notEqual(open[0].id, idA);
+  assert.equal(open[0].amount, "2000");
+
+  // Through the real spot-check hook, with a resource URL that differs from the fetch URL.
+  const { layer: l2 } = make({});
+  const other = ctx("50000", { url: "https://seller.example/api?x=1" });
+  const keep = ctx("1000", { url: "https://seller.example/api?x=1" });
+  await l2.beforePayment(keep);
+  const hook = composeBeforePaymentHooks(l2.beforePayment, spotCheckBeforePaymentHook({ expected: () => ({ price: 0.001 }), onDecision: l2.onDecision }));
+  const r = await hook(other);
+  assert.equal(r?.abort, true);
+  {
+    const left = l2.openReservations();
+    assert.equal(left.length, 1);
+    assert.equal(left[0].id, keep.audit.reservationId);
+  }
+
+  // No ctx: newest open match is released instead of none.
+  const { layer: l3 } = make({});
+  const c1 = ctx("1000"), c2 = ctx("1000");
+  await l3.beforePayment(c1); await l3.beforePayment(c2);
+  await l3.onDecision({ allowed: false, url: URL, verdict: "skip" });
+  assert.deepEqual(l3.openReservations().map((x) => x.id), [c1.audit.reservationId]);
+});
+
+test("skip rows without an id are not double-counted on re-ingest", async () => {
+  const { layer } = make({ policy: { dailyBudgetAtomic: 1_000_000 } });
+  const seller = "0x" + "e5".repeat(20);
+  const row = { pay_to: seller, network: "eip155:8453", verdict: "skip", reason: "asks a different price than listed", timestamp: "2026-10-16T00:00:00Z", url: "https://seller.example/api" };
+  assert.equal((await layer.ingestSkips([row])).added, 1);
+  assert.equal((await layer.ingestSkips([{ ...row }])).added, 0);
+  const step = await layer.beforePayment(ctx("1000", { req: { payTo: seller } }));
+  assert.match(step.reason, /risk_price_mismatch$/);
+  assert.equal((await layer.ingestSkips([{ ...row, timestamp: "2026-10-16T01:00:00Z" }])).added, 1);
+});
+
+test("a payload without validBefore is reconciled after 120s and escalated after 24h", async () => {
+  const calls = [];
+  const fetch = async (url) => { calls.push(String(url)); return Response.json({ status: "unknown" }); };
+  const escalated = [];
+  const { layer, setNow } = make({ fetch, verify: false, onEscalate: (e) => escalated.push(...e) });
+  assert.equal(await layer.beforePayment(ctx()), undefined);
+  const noVb = b64({ x402Version: 2, accepted: { scheme: "exact", network: "eip155:8453", amount: "10000", asset: USDC, payTo: SAMPLE_REQUIREMENT.payTo }, payload: { transaction: "AAAA" } });
+  await layer.onPayment({ paymentPayload: noVb, url: URL });
+  assert.equal(layer.openReservations()[0].validBefore, null);
+  setNow(T0 + 60_000);
+  assert.equal((await layer.reconcile()).checked, 0);
+  setNow(T0 + 121_000);
+  const first = await layer.reconcile();
+  assert.equal(first.checked, 1);
+  assert.equal(first.escalations.length, 0);
+  setNow(T0 + 3 * 24 * 60 * 60 * 1000);
+  const late = await layer.reconcile();
+  assert.equal(late.escalations.length, 1);
+  assert.equal(escalated.length, 1);
+});
+
+test("ingestSkips survives bad feeds and follows next only on the same origin", async () => {
+  const seen = [];
+  const pages = {
+    "https://feed.example/s.json": { skips: [{ id: "a", pay_to: "0x" + "aa".repeat(20), verdict: "skip", reason: "price_mismatch" }], next: "/s2.json" },
+    "https://feed.example/s2.json": { skips: [{ id: "b", pay_to: "0x" + "bb".repeat(20), verdict: "skip", reason: "price_mismatch" }], next: "https://evil.example/s3.json" },
+  };
+  const fetch = async (u) => { seen.push(String(u)); return Response.json(pages[String(u)] ?? { skips: [] }); };
+  const { layer } = make({ fetch, skipsUrl: "https://feed.example/s.json" });
+  const ok = await layer.ingestSkips();
+  assert.equal(ok.added, 2);
+  assert.deepEqual(seen, ["https://feed.example/s.json", "https://feed.example/s2.json"]);
+
+  for (const body of [null, { skips: "nope" }]) {
+    const { layer: l } = make({ fetch: async () => Response.json(body), skipsUrl: "https://feed.example/s.json" });
+    const r = await l.ingestSkips();
+    assert.equal(r.added, 0);
+    assert.equal(typeof r.error, "string");
+  }
+  const { layer: down } = make({ fetch: async () => { throw new Error("offline"); }, skipsUrl: "https://feed.example/s.json" });
+  const r = await down.ingestSkips();
+  assert.deepEqual([r.added, r.error], [0, "offline"]);
+});
+
+test("sealed payloads are bound to their reservation id", async () => {
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const { layer } = make({ payloadKey: key });
+  await layer.beforePayment(ctx());
+  await layer.onPayment({ paymentPayload: pay(), url: URL });
+  const st = await layer.exportState();
+  const [id] = Object.keys(st.payloads);
+  const blob = st.payloads[id];
+  const k = await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]);
+  const iv = Buffer.from(blob.iv, "base64"), ct = Buffer.from(blob.ct, "base64");
+  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode(id) }, k, ct);
+  assert.equal(new TextDecoder().decode(pt), pay());
+  await assert.rejects(crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: new TextEncoder().encode("rsv_other") }, k, ct));
+});
