@@ -10,6 +10,8 @@ export interface AfterPayResult {
   wait_until?: string | null;
   tx?: any; terms_match?: any; claim?: any; receipt?: any; receipt_verified?: boolean; error?: string; [k: string]: any;
 }
-export interface AfterPayOptions { url?: string; fetch?: typeof fetch; timeoutMs?: number; client?: string; verify?: boolean; publicKey?: any; paymentHeader?: string; apiKey?: string; onResult?: (r: AfterPayResult, ctx: { url: string; response: Response | null; error: any; paymentPayload?: string | null }) => void | Promise<void> }
+export interface AfterPayOptions { url?: string; fetch?: typeof fetch; timeoutMs?: number; client?: string; verify?: boolean; publicKey?: any; paymentHeader?: string; x402Version?: 1 | 2; apiKey?: string; onResult?: (r: AfterPayResult, ctx: { url: string; response: Response | null; error: any; paymentPayload?: string | null }) => void | Promise<void> }
+export declare function proofHeaderForVersion(version: unknown): "X-PAYMENT" | "PAYMENT-SIGNATURE" | null;
+export declare function paymentHeaderVersion(value: string): number | string | null;
 export declare function afterPay(ref: AfterPayRef, opts?: AfterPayOptions): Promise<AfterPayResult>;
 export declare function needsAfterPay(resOrError: any): boolean;
