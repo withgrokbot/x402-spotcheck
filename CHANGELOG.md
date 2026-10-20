@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (branch phase-a/version-header-sqlite-ledger, not published)
+## 1.6.0 (2026-10-20)
 - Battle-test fixes and hardening:
   - The authorize service no longer trusts client-reported payment-status. Claims are held as unverified unless a `settlementVerifier` confirms them (new `x402-spotcheck/audit/evm-verify`: an on-chain check of Transfer + AuthorizationUsed, and authorizationState for not_landed) or `trustClientStatus: true` is set. A settle for another client's reservation is refused, and `payers` binds clients to payer addresses.
   - The SQLite store has a head anchor (catches tail truncation), and checks the seq/hash columns against the entry JSON and reservations against the chain (catches tampering with unchained rows).

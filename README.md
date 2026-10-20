@@ -11,7 +11,7 @@ A guard for x402 clients and routers. Right before your client signs, it judges 
 
 ```bash
 npm i x402-spotcheck
-# or from GitHub: npm i github:withgrokbot/x402-spotcheck#v1.5.1
+# or from GitHub: npm i github:withgrokbot/x402-spotcheck#v1.6.0
 ```
 
 ## One line
@@ -43,8 +43,8 @@ client.onBeforePaymentCreation(threeWsSpendingCapThenSpotCheck(buildSpendingCapH
 The verdict behavior (what pays, what skips and why) changes only on a major version. Minor and patch releases may add options (off by default), fix crashes or improve docs. They never turn a `pay` into a `skip`. Pin exactly:
 
 ```bash
-npm i x402-spotcheck@1.5.1 --save-exact              # package.json: "x402-spotcheck": "1.5.1"
-npm i github:withgrokbot/x402-spotcheck#v1.5.1       # alternative: the GitHub tag
+npm i x402-spotcheck@1.6.0 --save-exact              # package.json: "x402-spotcheck": "1.6.0"
+npm i github:withgrokbot/x402-spotcheck#v1.6.0       # alternative: the GitHub tag
 npm i github:withgrokbot/spotcheck-rules#v1.0.0      # the rules alone
 ```
 

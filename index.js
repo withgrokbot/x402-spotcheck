@@ -7,7 +7,7 @@ import { runAfterPay, needsAfterPay } from "./after.js";
 import { expiryOpts, judgeExpiry, EXPIRY_CODE } from "./expiry.js";
 export { judgeExpiry, EXPIRY_CODE, MAX_SKEW_S } from "./expiry.js";
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL } from "./after.js";
-export const VERSION = "1.5.1";
+export const VERSION = "1.6.0";
 export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
 // Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
