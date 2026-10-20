@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased (branch phase-a/version-header-sqlite-ledger, not published)
+- Battle-test fixes and hardening:
+  - The authorize service no longer trusts client-reported payment-status. Claims are held as unverified unless a `settlementVerifier` confirms them (new `x402-spotcheck/audit/evm-verify`: an on-chain check of Transfer + AuthorizationUsed, and authorizationState for not_landed) or `trustClientStatus: true` is set. A settle for another client's reservation is refused, and `payers` binds clients to payer addresses.
+  - The SQLite store has a head anchor (catches tail truncation), and checks the seq/hash columns against the entry JSON and reservations against the chain (catches tampering with unchained rows).
+  - The store loads in one read transaction, so shared-mode readers no longer raise false tamper alarms.
+  - In shared mode, `deny: "throw"` keeps its denial entry and error, instead of rolling back to `audit_store_unavailable`.
 - Remote authorize service (localhost/testnet only in this phase). The client is `x402-spotcheck/audit/remote` (`remoteAudit`) and the server is `x402-spotcheck/audit/server` (`startAuditServer`, which binds to loopback and uses the shared SQLite store).
   - Endpoints: authorize, payment, settle, release and chain.
   - Requests are HMAC-signed per client, with a +-30 s timestamp window and nonce replay refusal. Responses are Ed25519-signed, echo the request nonce, and are checked against a pinned key.

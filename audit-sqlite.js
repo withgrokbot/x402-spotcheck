@@ -92,7 +92,7 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
   }
 
   const q = {
-    entries: db.prepare("SELECT entry FROM ledger ORDER BY seq"),
+    entries: db.prepare("SELECT seq, hash, entry FROM ledger ORDER BY seq"),
     reservations: db.prepare("SELECT rec FROM reservations"),
     payloads: db.prepare("SELECT id, blob FROM payloads"),
     putEntry: db.prepare("INSERT INTO ledger (seq, hash, entry) VALUES (?, ?, ?)"),
@@ -100,6 +100,8 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
     putBlob: db.prepare("INSERT INTO payloads (id, blob, rev) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET blob = excluded.blob, rev = excluded.rev"),
     delBlob: shared ? db.prepare("UPDATE payloads SET blob = 'null', rev = ? WHERE id = ?") : db.prepare("DELETE FROM payloads WHERE id = ?"),
     getRev: db.prepare("SELECT v FROM meta WHERE k = 'rev'"),
+    getHead: db.prepare("SELECT v FROM meta WHERE k = 'head'"),
+    setHead: db.prepare("INSERT INTO meta (k, v) VALUES ('head', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"),
     setRev: db.prepare("UPDATE meta SET v = ? WHERE k = 'rev'"),
     entriesSince: db.prepare("SELECT entry FROM ledger WHERE seq > ? ORDER BY seq"),
     resSince: db.prepare("SELECT rec, rev FROM reservations WHERE rev > ?"),
@@ -114,19 +116,31 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
   const lastRes = new Map(); // id -> JSON last written, so only changed rows are rewritten
   const lastBlob = new Map();
 
+  function loadSnapshot() {
+      lastRes.clear(); lastBlob.clear();
+      seenRev = Number(q.getRev.get().v) || 0;
+      // P4: the seq/hash columns must agree with the entry JSON (otherwise a row was edited outside the library)
+      const entries = q.entries.all().map((r) => { const e = JSON.parse(r.entry); if (e.seq !== r.seq || e.hash !== r.hash) e.__columnMismatch = true; return e; });
+      const reservations = q.reservations.all().map((r) => { lastRes.set(JSON.parse(r.rec).id, r.rec); return JSON.parse(r.rec); });
+      const payloads = new Map(q.payloads.all().filter((r) => r.blob !== "null").map((r) => { lastBlob.set(r.id, r.blob); return [r.id, JSON.parse(r.blob)]; }));
+      seenSeq = entries.length;
+      // P4: head anchor (last seq + hash, written in the same transaction as the rows). A chain that verifies but
+      // is shorter than the anchor was truncated at the tail.
+      const head = q.getHead.get()?.v || null;
+      return { entries, reservations, payloads, head };
+  }
+
   return {
     kind: "sqlite",
     path,
     shared,
     /** Everything on disk, for createAudit to load at start. */
     load() {
-      lastRes.clear(); lastBlob.clear();
-      seenRev = Number(q.getRev.get().v) || 0;
-      const entries = q.entries.all().map((r) => JSON.parse(r.entry));
-      const reservations = q.reservations.all().map((r) => { lastRes.set(JSON.parse(r.rec).id, r.rec); return JSON.parse(r.rec); });
-      const payloads = new Map(q.payloads.all().filter((r) => r.blob !== "null").map((r) => { lastBlob.set(r.id, r.blob); return [r.id, JSON.parse(r.blob)]; }));
-      seenSeq = entries.length;
-      return { entries, reservations, payloads };
+      // P4: one read transaction = one consistent snapshot. Without it a shared-mode reader could see the ledger
+      // before and the head anchor/reservations after another process's commit (false tamper alarms, found by crash-1000).
+      const own = !inTx;
+      if (own) db.exec("BEGIN");
+      try { return loadSnapshot(); } finally { if (own) { try { db.exec("COMMIT"); } catch { /* read-only */ } } }
     },
     /** Shared mode: open the step's write transaction (waits up to busyTimeoutMs for other processes). */
     async begin() {
@@ -149,6 +163,7 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
       seenRev = Number(q.getRev.get().v) || 0;
       return { entries, reservations, payloads };
     },
+    inTransaction() { return inTx; },
     commit() { try { if (inTx) { db.exec("COMMIT"); inTx = false; } } finally { releaseFile?.(); releaseFile = null; } },
     rollback() { if (inTx) { inTx = false; try { db.exec("ROLLBACK"); } catch { /* already rolled back */ } } releaseFile?.(); releaseFile = null; },
     /** Write new entries and changed reservations/payloads in one transaction. Throws StoreUnavailableError. */
@@ -161,7 +176,9 @@ export async function openAuditStore(path, { busyTimeoutMs, shared = false } = {
           let rev = Number(q.getRev.get().v) || 0;
           const rev0 = rev;
           const have = Number(q.maxSeq.get().n);
-          for (const e of entries) if (e.seq > have) q.putEntry.run(e.seq, e.hash, JSON.stringify(e));
+          let last = null;
+          for (const e of entries) if (e.seq > have) { q.putEntry.run(e.seq, e.hash, JSON.stringify(e)); last = e; }
+          if (last) q.setHead.run(`${last.seq}:${last.hash}`);
           const wroteRes = [], wroteBlob = [], dropped = [];
           for (const r of reservations) {
             const j = JSON.stringify(r);

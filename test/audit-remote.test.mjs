@@ -28,7 +28,7 @@ async function boot(extra = {}) {
 }
 
 test("authorize -> payment -> settle -> chain; budget enforced by the service", { skip }, async () => {
-  const { srv, client } = await boot();
+  const { srv, client } = await boot({ trustClientStatus: true }); // P4: explicit opt-in to trusting the client
   const a = client();
   const c = ctx("k1", "600");
   assert.equal(await a.beforePayment(c), undefined);
