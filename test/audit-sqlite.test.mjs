@@ -140,7 +140,8 @@ test("crash: SIGKILL during a reserve loop leaves a chain that verifies", { skip
   const code = `import { openAuditStore } from "${SRC}audit-sqlite.js"; import { createAudit } from "${SRC}audit.js";
     const a = createAudit({ store: await openAuditStore(process.env.DB), policy: { version: "p1" } });
     const req = { scheme: "exact", network: "eip155:8453", amount: "1", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", payTo: "0x" + "ab".repeat(20) };
-    console.log("ready"); for (;;) await a.beforePayment({ paymentRequired: { x402Version: 2, resource: { url: "https://s.test/a" }, accepts: [req] }, selectedRequirements: req });`;
+    const step = () => a.beforePayment({ paymentRequired: { x402Version: 2, resource: { url: "https://s.test/a" }, accepts: [req] }, selectedRequirements: req });
+    await step(); console.log("ready"); for (;;) await step();`; // "ready" only after one committed step (CI runners are slow)
   const p = spawn(process.execPath, ["--no-warnings", "--input-type=module", "-e", code], { env: { ...process.env, DB: path } });
   await new Promise((res) => p.stdout.once("data", res));
   await new Promise((res) => setTimeout(res, 200));
