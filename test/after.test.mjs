@@ -20,7 +20,7 @@ const svc = (reply, calls = []) => async (url, init = {}) => {
   throw new Error("unexpected " + url);
 };
 
-test("version 1.4.0", () => assert.equal(VERSION, "1.4.0"));
+test("version 1.5.0", () => assert.equal(VERSION, "1.5.0"));
 
 test("afterPay: posts the payment payload + seller url, returns the answer, verifies the signed receipt", async () => {
   const base = { status: "not_landed", safe_to_resign: true, safe_to_retry_same_payload: true };
@@ -82,7 +82,8 @@ test("spotCheckFetch afterPay: a paid call that 5xxs gets .afterPay; a paid call
     return new Response("x", { status: mode === "ok" ? 200 : 502 });
   };
   const results = [];
-  const f = spotCheckFetch(inner, { afterPay: { fetch: inner, verify: false, onResult: (r) => results.push(r.status) } });
+  const payloads = [];
+  const f = spotCheckFetch(inner, { afterPay: { fetch: inner, verify: false, onResult: (r, ctx) => { results.push(r.status); payloads.push(ctx && ctx.paymentPayload); } } });
   const r = await f("https://seller.test/x", { headers: { "payment-signature": PAY } });
   assert.equal(r.status, 502); assert.equal(r.afterPay.status, "landed"); assert.equal(r.afterPay.safe_to_resign, false);
   assert.deepEqual(seen[0], { payment_payload: PAY, seller_url: "https://seller.test/x" });
@@ -92,6 +93,7 @@ test("spotCheckFetch afterPay: a paid call that 5xxs gets .afterPay; a paid call
   const ok = await f("https://seller.test/x", { headers: { "payment-signature": PAY } });
   assert.equal(ok.status, 200); assert.equal(ok.afterPay, undefined);
   assert.deepEqual(results, ["landed", "landed"]);
+  assert.deepEqual(payloads, [PAY, PAY]);
   // the status service itself down: original result unchanged, outcome unknown
   const down = spotCheckFetch(async (u) => { if (String(u) === PAYMENT_STATUS_URL) throw new Error("down"); return new Response("x", { status: 503 }); }, { afterPay: true });
   const d = await down("https://seller.test/x", { headers: { "payment-signature": PAY } });

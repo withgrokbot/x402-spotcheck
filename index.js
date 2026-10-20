@@ -7,7 +7,7 @@ import { runAfterPay, needsAfterPay } from "./after.js";
 import { expiryOpts, judgeExpiry, EXPIRY_CODE } from "./expiry.js";
 export { judgeExpiry, EXPIRY_CODE, MAX_SKEW_S } from "./expiry.js";
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL } from "./after.js";
-export const VERSION = "1.4.0";
+export const VERSION = "1.5.0";
 export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
 // Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
@@ -388,11 +388,11 @@ function makeDecider(opts) {
   if (opts.autoPayCheck && opts.mode !== "service") throw new TypeError('autoPayCheck needs mode: "service"');
   const decide = opts.mode === "service" ? createSpotChecker(opts) : localDecider(opts);
   const eo = expiryOpts(opts.checkExpiry);
-  return async (url, o) => {
+  return async (url, o, ctx) => {
     let d;
     try { d = await decide(url, o); } catch (e) { d = passThrough(url, "check error: " + String((e && e.message) || e)); }
     if (eo) d = withExpiry(d, o, eo); // 1.4.0 opt-in only
-    if (opts.onDecision) { try { await opts.onDecision(d); } catch { /* observers never block */ } }
+    if (opts.onDecision) { try { await (ctx === undefined ? opts.onDecision(d) : opts.onDecision(d, ctx)); } catch { /* observers never block */ } }
     return d;
   };
 }
@@ -464,6 +464,9 @@ export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
     if (isSpotCheck(url, opts)) return fetchImpl(input, init);
     if (pay) {
       await checkSigned(pay, url, method, decide);
+      if (typeof opts.onPayment === "function") {
+        try { await opts.onPayment({ paymentPayload: pay, url, method }); } catch { /* observers never block a payment that already passed the check */ }
+      }
       if (!opts.afterPay) return fetchImpl(input, init); // 1.1.0 behaviour unless afterPay is opted in
       let res;
       try {
@@ -495,6 +498,9 @@ export function spotCheckAxios(instance, opts = {}) {
     const full = fullUrl(config);
     if (isSpotCheck(full, opts)) return config;
     await checkSigned(pay, full, (config.method || "GET").toUpperCase(), decide);
+    if (typeof opts.onPayment === "function") {
+      try { await opts.onPayment({ paymentPayload: pay, url: full, method: (config.method || "GET").toUpperCase() }); } catch { /* observers never block a payment that already passed the check */ }
+    }
     return config;
   });
   instance.interceptors.response.use(undefined, async (error) => {
@@ -551,7 +557,7 @@ export function spotCheckBeforePaymentHook(opts = {}) {
       const url = (ctx && ctx.paymentRequired && ctx.paymentRequired.resource && ctx.paymentRequired.resource.url) || (req && req.resource) || null;
       if (!req || !url) return undefined;
       const method = typeof opts.method === "function" ? await opts.method(url) : opts.method || "GET";
-      const d = await decide(url, { method, target: { accepts: [req] } });
+      const d = await decide(url, { method, target: { accepts: [req] } }, ctx);
       if (!d.allowed) return { abort: true, reason: `x402-spotcheck: ${d.reason_code || d.verdict}: ${d.reason}` };
       const why = await d.fits(req);
       if (why) return { abort: true, reason: "x402-spotcheck: " + why };
@@ -585,4 +591,5 @@ export function threeWsSpendingCapThenSpotCheck(buildSpendingCapHook, opts = {})
 
 export { judgeRequirement, judge402 };
 export { verifyReceipt, canonicalize, receiptSigningInput, RECEIPT_KEYS_URL } from "./receipt.js";
+export { createAudit, auditPolicyHook, createLedger, createPolicy, createBudgets, settlementAdvice, skipReasonCode, fetchSkips, SKIPS_URL, RECONCILE_AFTER_MS, AUDIT_VERSION } from "./audit.js";
 export default spotCheckFetch;

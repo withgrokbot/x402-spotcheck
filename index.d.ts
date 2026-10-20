@@ -46,7 +46,10 @@ export interface SpotCheckOptions {
   onUnavailable?: "allow" | "block";
   /** your listing for this URL: the price / payTo / network you expect */
   expected?: (url: string, intent: { network: string | null; payTo: string | null; priceUsd: number | null } | null) => { price?: number; payTo?: string; network?: string } | undefined | Promise<{ price?: number; payTo?: string; network?: string } | undefined>;
-  onDecision?: (d: SpotDecision) => void | Promise<void>;
+  /** ctx is passed only by spotCheckBeforePaymentHook (the hook context). */
+  onDecision?: (d: SpotDecision, ctx?: any) => void | Promise<void>;
+  /** 1.5.0 opt-in: the PAYMENT-SIGNATURE about to be sent, after the pre-sign check has passed. Observers never block. */
+  onPayment?: (info: { paymentPayload: string; url: string; method: string }) => void | Promise<void>;
   cacheTtlMs?: number;
   /** service: hard deadline for the check, ms (default 1500); on expiry onUnavailable applies */
   timeoutMs?: number;
@@ -81,6 +84,7 @@ export declare function createSpotChecker(opts?: SpotCheckOptions): (url: string
 export declare function checkBeforePay(url: string, o?: SpotCheckOptions & { price?: number; payTo?: string; network?: string; method?: string; accepts?: any[] }): Promise<SpotDecision>;
 export declare function readPaymentIntent(headerValue: string): { network: string | null; payTo: string | null; priceUsd: number | null } | null;
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL, AfterPayResult, AfterPayOptions, AfterPayRef } from "./after.js";
+export { createAudit, auditPolicyHook, createLedger, createPolicy, createBudgets, settlementAdvice, skipReasonCode, fetchSkips, SKIPS_URL, RECONCILE_AFTER_MS, AUDIT_VERSION, AuditLayer, AuditHook, SettlementAdvice } from "./audit.js";
 export default spotCheckFetch;
 export function checkApiKey(k: unknown): string | null;
 export declare const EXPIRY_CODE: "challenge_expired";

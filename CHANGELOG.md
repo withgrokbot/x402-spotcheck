@@ -2,6 +2,16 @@
 
 
 
+## 1.5.0 (2026-10-19)
+- Opt-in audit layer at `x402-spotcheck/audit`: `createAudit` and `auditPolicyHook`. Register it after the spending cap and before `spotCheckBeforePaymentHook`. It reserves budget before a signature, appends a hash-chained ledger, and denies by returning `{ abort: true }` (or throwing when `deny: "throw"`).
+- `mode: "observe"` logs would-be denials and does not reserve or abort. Enforcement is the default.
+- An outage fails closed above `failClosedAboveAtomic` (default `0`, so any positive amount stops) and fails open at or below it. Both outcomes are logged. A policy deny always stops in enforce mode.
+- `onDecision`, `onPayment`, and `onAfterPay` connect the spot-check decision, the PAYMENT-SIGNATURE that was sent, and payment-status. The signature is kept off the hash chain and encrypted when `payloadKey` is set.
+- Settlement follows the payment-status table. `mayResign` is true only after a verified `not_landed` with `safe_to_resign`. Anything unverified, pending, unknown, landed, or canceled does not re-sign.
+- `reconcile` asks payment-status only for open reservations that still have a payload and are past `validBefore` + 120s. Unknown rows still open after 24h are escalated. `ingestSkips` turns `/v1/skips` into payTo priors.
+- The audit ledger is in memory only: reservations, payloads and the chain are lost on restart.
+- A skip releases the reservation made for that hook call (`spotCheckBeforePaymentHook` now passes its context as `onDecision(d, ctx)`), falling back to the newest open reservation for the URL. Skip rows without an id get a deterministic id, so re-ingesting does not double-count. Payloads without `validBefore` (e.g. Solana) are reconciled 120s after the reservation and escalated after 24h. `ingestSkips` resolves `{ added: 0, error }` on a feed failure and follows `next` only on the same origin. `payloadKey` should be a random 32-byte key; sealed payloads are bound to their reservation id.
+- `spotCheckFetch` / `spotCheckAxios` take an optional `onPayment` observer. `afterPay`'s `onResult` context includes `paymentPayload`. Neither changes verdicts, and both stay off unless you pass them.
 ## 1.4.0 (2026-10-16)
 - New opt-in `checkExpiry` (`true` or `{ skewS = 30 (max 300), minWindowS = 5, now }`). When it's set, a 402 or a signed payment that has already expired, or expires within the skew, gets `skip` with the new reason `challenge_expired`.
 - What it reads: the signed authorization's `validBefore`; then `extra.validBefore` / `expiresAt` / `expiry` / `deadline` (seconds, ms or ISO); then `maxTimeoutSeconds` <= `minWindowS`. Unreadable values never block.

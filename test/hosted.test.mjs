@@ -6,7 +6,7 @@ const KEY = "402x_live_0a1b2c3d_" + "A".repeat(43);
 const okBody = { verdict: "pay", reason: "price_ok", payment_terms_sha256: null, access: { tier: "hosted" } };
 
 test("1.3.0 apiKey: bad shapes refused up front; null/undefined ok", () => {
-  assert.equal(VERSION, "1.4.0");
+  assert.equal(VERSION, "1.5.0");
   assert.equal(checkApiKey(undefined), null);
   assert.equal(checkApiKey(KEY), KEY);
   for (const k of ["", "sk-abc", "402x_live_zz_short", 42]) assert.throws(() => checkApiKey(k), TypeError);

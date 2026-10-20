@@ -10,7 +10,7 @@ export interface AfterPayResult {
   wait_until?: string | null;
   tx?: any; terms_match?: any; claim?: any; receipt?: any; receipt_verified?: boolean; error?: string; [k: string]: any;
 }
-export interface AfterPayOptions { url?: string; fetch?: typeof fetch; timeoutMs?: number; client?: string; verify?: boolean; publicKey?: any; paymentHeader?: string; apiKey?: string; onResult?: (r: AfterPayResult, ctx: { url: string; response: Response | null; error: any }) => void | Promise<void> }
+export interface AfterPayOptions { url?: string; fetch?: typeof fetch; timeoutMs?: number; client?: string; verify?: boolean; publicKey?: any; paymentHeader?: string; apiKey?: string; onResult?: (r: AfterPayResult, ctx: { url: string; response: Response | null; error: any; paymentPayload?: string | null }) => void | Promise<void> }
   /** 1.3.0: integrator key (hosted mode); spotCheckFetch passes its own apiKey through. */
   apiKey?: string;
 export declare function afterPay(ref: AfterPayRef, opts?: AfterPayOptions): Promise<AfterPayResult>;
