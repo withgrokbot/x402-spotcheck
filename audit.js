@@ -285,6 +285,11 @@ export function createBudgets({ dailyBudgetAtomic = null, now = () => Date.now()
       reservations.set(id, rec);
       return { id };
     },
+    /** P2 shared store: take rows written by another process (amounts as strings). */
+    adopt(recs, { replace = false } = {}) {
+      if (replace) reservations.clear();
+      for (const r of recs) { reservations.set(r.id, { ...r, amount: BigInt(r.amount) }); seq = Math.max(seq, Number(r.n) || 0); }
+    },
     get(id) { return reservations.get(id) || null; },
     list() { return [...reservations.values()]; },
     listOpen() { return this.list().filter((r) => r.status === "open"); },
@@ -542,13 +547,50 @@ export function createAudit(opts = {}) {
     payloads: blobs,
   });
   // Every locked step is written to the store before it resolves. A write failure rejects the step.
-  const lock = store
-    ? (fn) => baseLock(async () => {
-        await storeReady;
-        try { return await fn(); }
-        finally { flushStore(); }
-      })
-    : baseLock;
+  const shared = !!(store && store.shared);
+  const mine = new Set(); // shared mode: reservations this instance opened (URL fallbacks never touch another process's rows)
+  // Shared mode (P2): every locked step is one BEGIN IMMEDIATE transaction: pull other processes' rows,
+  // run the step, write, COMMIT. A failure rolls back and resyncs memory from disk; the step rejects (fail closed).
+  async function adoptChanges(ch) {
+    for (const e of ch.entries) {
+      const list = ledger.entries;
+      const last = list[list.length - 1];
+      if (e.seq !== list.length + 1 || e.prev_hash !== (last ? last.hash : GENESIS)) throw new StoreUnavailableError(`shared store chain does not link at seq ${e.seq}`);
+      const { hash, ...body } = e;
+      if ((await sha256Prefixed(canonicalize(body))) !== hash) throw new StoreUnavailableError(`shared store entry ${e.seq} hash mismatch`);
+      list.push(e);
+    }
+    budgets.adopt(ch.reservations);
+    for (const [id, blob] of ch.payloads) { if (blob == null) blobs.delete(id); else blobs.set(id, blob); }
+  }
+  function resync() {
+    const all = store.load();
+    ledger.entries.length = 0; ledger.entries.push(...all.entries);
+    budgets.adopt(all.reservations, { replace: true });
+    blobs.clear(); for (const [id, b] of all.payloads) blobs.set(id, b);
+  }
+  const lock = !store ? baseLock
+    : shared
+      ? (fn) => baseLock(async () => {
+          await storeReady;
+          await store.begin();
+          try {
+            await adoptChanges(store.changes());
+            const out = await fn();
+            flushStore();
+            store.commit();
+            return out;
+          } catch (e) {
+            store.rollback();
+            try { resync(); } catch { /* next step retries */ }
+            throw e instanceof StoreUnavailableError ? e : new StoreUnavailableError("shared audit step failed: " + (e?.message || e), e);
+          }
+        })
+      : (fn) => baseLock(async () => {
+          await storeReady;
+          try { return await fn(); }
+          finally { flushStore(); }
+        });
   const netCfgOpt = opts.networkConfig ?? opts.policy?.networkConfig ?? null;
   const netCfgNorm = netCfgOpt ? normaliseNetworkConfig(netCfgOpt) : null;
   const netCfgAssets = netCfgNorm ? Object.values(netCfgNorm).flatMap((n) => Object.keys(n.assets)) : [];
@@ -590,19 +632,52 @@ export function createAudit(opts = {}) {
   function dropPayload(id) { secrets.delete(id); blobs.delete(id); }
 
   function remember(ctx, id) {
+    if (shared) mine.add(id);
+    const key = idemKeyOf(ctx);
+    if (key) { const r = budgets.get(id); if (r) r.idem = key; }
     if (ctx && typeof ctx === "object") {
       bound.set(ctx, id);
       try { ctx.audit = { reservationId: id }; } catch { /* frozen context still works via the WeakMap when we wrapped the hook */ }
     }
   }
 
-  const innerHook = auditPolicyHook({
+  // P2: idempotency keys. ctx.idempotencyKey or opts.idempotencyKey(ctx). One live (open/settled) reservation per key,
+  // enforced in memory and, with a store, by a UNIQUE index. A retry of an open key reuses that reservation (no new
+  // booking); a key whose reservation settled is denied (duplicate_idempotency_key); a released key may book again.
+  function idemKeyOf(ctx) {
+    let k = null;
+    try { k = typeof opts.idempotencyKey === "function" ? opts.idempotencyKey(ctx) : ctx?.idempotencyKey; } catch { k = null; }
+    return k == null || k === "" ? null : String(k);
+  }
+  function liveFor(key) {
+    for (const r of budgets.list()) if (r.idem === key && (r.status === "open" || r.status === "settled")) return r;
+    return null;
+  }
+  const policyHook = auditPolicyHook({
     policy, budgets, ledger, mode, now,
     agentId: opts.agentId || "default",
     failClosedAboveAtomic: opts.failClosedAboveAtomic ?? opts.policy?.failClosedAboveAtomic ?? 0,
     deny: opts.deny || "abort",
     onReserved: remember,
   });
+  async function innerHook(ctx) {
+    const key = idemKeyOf(ctx);
+    if (key) {
+      const live = liveFor(key);
+      if (live && live.status === "open") {
+        remember(ctx, live.id);
+        await ledger.append({ type: "decision", agent: live.agent, url: live.url, amount: live.amount.toString(), payTo: live.payTo, network: live.network, asset: live.asset, reason: "idempotent_reuse", id: live.id, reservation_id: live.id });
+        return undefined;
+      }
+      if (live) {
+        await ledger.append({ type: "denied", agent: live.agent, url: live.url, amount: live.amount.toString(), payTo: live.payTo, network: live.network, asset: live.asset, reason: "duplicate_idempotency_key", reservation_id: live.id });
+        if (mode === "observe") return undefined;
+        if (opts.deny === "throw") throw Object.assign(new Error("audit deny: duplicate_idempotency_key"), { code: "audit_deny", reason: "duplicate_idempotency_key" });
+        return { abort: true, reason: "audit deny: duplicate_idempotency_key" };
+      }
+    }
+    return policyHook(ctx);
+  }
   // Evaluate and reserve under one lock so concurrent calls cannot share one remaining budget.
   const beforePayment = store
     ? async (ctx) => {
@@ -627,7 +702,7 @@ export function createAudit(opts = {}) {
   function newestOpenFor(...urls) {
     const want = urls.filter(Boolean);
     if (!want.length) return null;
-    return budgets.listOpen().filter((r) => want.includes(r.url)).sort((a, b) => b.n - a.n)[0] || null;
+    return budgets.listOpen().filter((r) => (!shared || mine.has(r.id)) && want.includes(r.url)).sort((a, b) => b.n - a.n)[0] || null;
   }
 
   async function releaseOpen(ctx, info) {
@@ -727,7 +802,8 @@ export function createAudit(opts = {}) {
           return true;
         };
         const newest = (list) => list.sort((a, b) => b.n - a.n)[0] || null;
-        rec = newest(budgets.listOpen().filter((r) => fits(r, url))) || (url ? newest(budgets.listOpen().filter((r) => fits(r, null))) : null);
+        const own = budgets.listOpen().filter((r) => !shared || mine.has(r.id));
+        rec = newest(own.filter((r) => fits(r, url))) || (url ? newest(own.filter((r) => fits(r, null))) : null);
       }
       if (!rec) {
         await ledger.append({ type: "risk_flag", agent: opts.agentId || "default", url: url || null, reason: "payment_without_reservation", payTo: decoded?.payTo || null, network: decoded?.network || null, amount: decoded?.amount ?? null, ts: iso(now()), policyVersion: policy.version });

@@ -118,6 +118,8 @@ export interface AuditLayer {
   exportState(): Promise<{ entries: LedgerEntry[]; payloads: Record<string, any>; reservations: any[] }>;
 }
 export interface AuditOptions {
+  /** P2: idempotency key per payment intent (default: ctx.idempotencyKey). One live reservation per key. */
+  idempotencyKey?: (ctx: any) => string | null | undefined;
   /** 1.6.0: opt-in network/asset config (x402-spotcheck/networks presets). Unknown networks/assets are denied. */
   networkConfig?: import("./networks.js").NetworkConfig | Record<string, import("./networks.js").NetworkEntry>;
   agentId?: string | ((ctx: any) => string | Promise<string>);

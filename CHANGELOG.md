@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased (branch phase-a/version-header-sqlite-ledger, not published)
+- Idempotency keys (`ctx.idempotencyKey` or `createAudit({ idempotencyKey(ctx) })`): one live reservation per key. A retry of an open key reuses it, a settled key is denied with `duplicate_idempotency_key`, and a released key may book again. With a store, a UNIQUE index enforces this on disk.
+- Shared multi-process store: `openAuditStore(path, { shared: true })`. Each audit step is one BEGIN IMMEDIATE transaction that first pulls other processes' rows, so budgets are never double-booked. URL fallbacks only touch this instance's reservations. The default stays single-writer.
 - Network/asset config (`x402-spotcheck/networks`): presets `baseMainnet` (the implicit 1.5.x default), `baseSepolia`, `solanaDevnet`; `createAudit({ networkConfig })`. With a config set, unknown networks are denied (`network_not_configured`) and so are unknown assets (`asset_not_configured`). Solana reservations settle on a verified payment-status, or are rejected up front with `network_unsupported_for_settlement` when the entry has `settlement: false`. Without `networkConfig`, nothing changes.
 - `@x402/core` ^2.0.0 is now an optional peer dependency.
 - `afterPay` picks the proof header from `x402Version`: `2` sends `PAYMENT-SIGNATURE` and `1` sends `X-PAYMENT`. The version comes from `opts.x402Version` or from the decoded `paymentHeader`. Any other version returns `unknown` with reason `unsupported_x402_version`, and nothing is sent. New helpers: `proofHeaderForVersion` and `paymentHeaderVersion`.
