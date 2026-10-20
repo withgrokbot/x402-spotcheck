@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased (branch phase-a/version-header-sqlite-ledger, not published)
+- Remote authorize service (localhost/testnet only in this phase). The client is `x402-spotcheck/audit/remote` (`remoteAudit`) and the server is `x402-spotcheck/audit/server` (`startAuditServer`, which binds to loopback and uses the shared SQLite store).
+  - Endpoints: authorize, payment, settle, release and chain.
+  - Requests are HMAC-signed per client, with a +-30 s timestamp window and nonce replay refusal. Responses are Ed25519-signed, echo the request nonce, and are checked against a pinned key.
+  - The client refuses payment when the service is down, slow (timeout) or answers with a bad signature.
 - Idempotency keys (`ctx.idempotencyKey` or `createAudit({ idempotencyKey(ctx) })`): one live reservation per key. A retry of an open key reuses it, a settled key is denied with `duplicate_idempotency_key`, and a released key may book again. With a store, a UNIQUE index enforces this on disk.
 - Shared multi-process store: `openAuditStore(path, { shared: true })`. Each audit step is one BEGIN IMMEDIATE transaction that first pulls other processes' rows, so budgets are never double-booked. URL fallbacks only touch this instance's reservations. The default stays single-writer.
 - Network/asset config (`x402-spotcheck/networks`): presets `baseMainnet` (the implicit 1.5.x default), `baseSepolia`, `solanaDevnet`; `createAudit({ networkConfig })`. With a config set, unknown networks are denied (`network_not_configured`) and so are unknown assets (`asset_not_configured`). Solana reservations settle on a verified payment-status, or are rejected up front with `network_unsupported_for_settlement` when the entry has `settlement: false`. Without `networkConfig`, nothing changes.
