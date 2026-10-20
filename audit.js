@@ -165,8 +165,8 @@ function testnetToMainnet(row) {
   return isTestnet(row.listed_network || row.expected_network || "") && isMainnet(row.network || "");
 }
 
-export function createLedger({ now = () => Date.now() } = {}) {
-  const entries = [];
+export function createLedger({ now = () => Date.now(), initial = [] } = {}) {
+  const entries = [...initial]; // initial: entries loaded from a store (verified by createAudit before use)
   async function append(partial = {}) {
     if (!LEDGER_TYPES.has(partial.type)) throw new TypeError("ledger type must be decision, reserved, denied, settled, released, reconciled, or risk_flag");
     const terms = partial.terms && typeof partial.terms === "object" ? partial.terms : {};
@@ -229,6 +229,16 @@ export function createLedger({ now = () => Date.now() } = {}) {
   return { append, verify, exportChain, get entries() { return entries; } };
 }
 
+/** A persistent store (x402-spotcheck/audit/sqlite) is missing, corrupt, tampered, locked or failed to write. */
+export class StoreUnavailableError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = "StoreUnavailableError";
+    this.code = "audit_store_unavailable";
+    this.cause = cause;
+  }
+}
+
 export class BudgetExceededError extends Error {
   constructor() {
     super("budget_exhausted");
@@ -237,11 +247,15 @@ export class BudgetExceededError extends Error {
   }
 }
 
-export function createBudgets({ dailyBudgetAtomic = null, now = () => Date.now() } = {}) {
+export function createBudgets({ dailyBudgetAtomic = null, now = () => Date.now(), initial = [] } = {}) {
   const daily = dailyBudgetAtomic == null ? null : atomic(dailyBudgetAtomic);
   if (dailyBudgetAtomic != null && daily == null) throw new TypeError("dailyBudgetAtomic must be a non-negative integer");
   const reservations = new Map();
   let seq = 0;
+  for (const r of initial) { // loaded from a store: amounts come back as strings
+    reservations.set(r.id, { ...r, amount: BigInt(r.amount) });
+    seq = Math.max(seq, Number(r.n) || 0);
+  }
   const used = (budgetId, day) => {
     let s = 0n;
     for (const r of reservations.values()) {
@@ -507,9 +521,31 @@ export function createAudit(opts = {}) {
   if (opts.payloadKey instanceof Uint8Array && opts.payloadKey.length !== 32) throw new TypeError("payloadKey must be a string or 32 bytes");
   const now = opts.now || (() => Date.now());
   const mode = opts.mode === "observe" ? "observe" : "enforce";
-  const lock = createLock();
-  const ledger = opts.ledger || createLedger({ now });
-  const budgets = opts.budgets || createBudgets({ dailyBudgetAtomic: opts.dailyBudgetAtomic ?? opts.policy?.dailyBudgetAtomic ?? null, now });
+  // Optional persistence (opt-in, x402-spotcheck/audit/sqlite). Without opts.store nothing below changes.
+  const store = opts.store || null;
+  if (store && (opts.ledger || opts.budgets)) throw new TypeError("pass either store or ledger/budgets, not both");
+  const loaded = store ? store.load() : null;
+  const baseLock = createLock();
+  const ledger = opts.ledger || createLedger({ now, initial: loaded ? loaded.entries : [] });
+  const budgets = opts.budgets || createBudgets({ dailyBudgetAtomic: opts.dailyBudgetAtomic ?? opts.policy?.dailyBudgetAtomic ?? null, now, initial: loaded ? loaded.reservations : [] });
+  // A loaded chain must verify before the first step; a tampered file fails closed.
+  const storeReady = store ? ledger.verify().then((v) => {
+    if (!v.valid) throw new StoreUnavailableError(`audit store chain does not verify at seq ${v.seq}: ${v.reason}`);
+  }) : null;
+  if (storeReady) storeReady.catch(() => {}); // surfaced on the first locked step
+  const flushStore = () => store.flush({
+    entries: ledger.entries,
+    reservations: budgets.list().map((r) => ({ ...r, amount: r.amount.toString() })),
+    payloads: blobs,
+  });
+  // Every locked step is written to the store before it resolves. A write failure rejects the step.
+  const lock = store
+    ? (fn) => baseLock(async () => {
+        await storeReady;
+        try { return await fn(); }
+        finally { flushStore(); }
+      })
+    : baseLock;
   const risk = createRisk({ windowMs: opts.riskWindowMs, assetAllow: opts.assetAllow || opts.policy?.assetAllow || [] });
   const inner = opts.policy && typeof opts.policy.evaluate === "function"
     ? opts.policy
@@ -526,7 +562,7 @@ export function createAudit(opts = {}) {
   };
   const aesReady = aesFrom(opts.payloadKey);
   const secrets = new Map();
-  const blobs = new Map();
+  const blobs = new Map(loaded ? loaded.payloads : []);
   const bound = new WeakMap();
   let pinned = normalizeKeys(opts.publicKey);
   const onUnknownKid = typeof opts.onUnknownKid === "function" ? opts.onUnknownKid : () => {};
@@ -561,7 +597,18 @@ export function createAudit(opts = {}) {
     onReserved: remember,
   });
   // Evaluate and reserve under one lock so concurrent calls cannot share one remaining budget.
-  const beforePayment = (ctx) => lock(() => innerHook(ctx));
+  const beforePayment = store
+    ? async (ctx) => {
+        try { return await lock(() => innerHook(ctx)); }
+        catch (e) {
+          if (!(e instanceof StoreUnavailableError)) throw e;
+          // Fail closed: if the reservation can't be written, don't let the payment be signed (observe never aborts).
+          if (mode === "observe") return undefined;
+          if (opts.deny === "throw") throw e;
+          return { abort: true, reason: "audit_store_unavailable" };
+        }
+      }
+    : (ctx) => lock(() => innerHook(ctx));
 
   function boundOpen(ctx) {
     if (!ctx || typeof ctx !== "object") return null;
@@ -844,6 +891,13 @@ export function createAudit(opts = {}) {
     reconcile,
     ingestSkips,
     mayResign,
+    store,
+    /** Persist pending changes (store only) and close the store. */
+    async close() {
+      if (!store) return;
+      await lock(() => {});
+      store.close();
+    },
     openReservations: () => budgets.listOpen().map((r) => ({ ...r, amount: r.amount.toString() })),
     decision: onDecision,
     settle: onAfterPay,

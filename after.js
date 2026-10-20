@@ -6,6 +6,23 @@ import { verifyReceipt } from "./receipt.js";
 
 export const PAYMENT_STATUS_URL = "https://api.402xagent.com/v1/products/payment-status";
 export const AFTER_PAY_TIMEOUT_MS = 4000;
+// Ported from Gatecheck src/probe.js: the proof header comes from x402Version, never assumed.
+// v1 -> X-PAYMENT, v2 -> PAYMENT-SIGNATURE, anything else -> null (refuse to guess). Matches @x402/core 2.28
+// x402HTTPClient.encodePaymentSignatureHeader.
+export function proofHeaderForVersion(version) {
+  if (version === 1 || version === "1") return "X-PAYMENT";
+  if (version === 2 || version === "2") return "PAYMENT-SIGNATURE";
+  return null;
+}
+/** x402Version of a base64 JSON payment header, or null when it can't be read. */
+export function paymentHeaderVersion(value) {
+  try {
+    const o = JSON.parse(typeof Buffer !== "undefined" ? Buffer.from(String(value).trim(), "base64").toString("utf8") : atob(String(value).trim()));
+    return o && typeof o === "object" && o.x402Version != null ? o.x402Version : null;
+  } catch (_) {
+    return null;
+  }
+}
 const UNKNOWN = (error) => ({ status: "unknown", safe_to_retry_same_payload: true, safe_to_resign: false, error, why: "could not reach 402xAgent payment status; do not sign a new payment until you know (retrying the SAME payment is safe: an EIP-3009 nonce is single-use)" });
 
 /**
@@ -25,11 +42,19 @@ export async function afterPay(ref = {}, opts = {}) {
   if (ref.terms) body.terms = ref.terms;
   if (opts.client) body.client = String(opts.client);
   if (!body.payment_payload && !body.tx_hash && !(body.from && body.nonce)) return UNKNOWN("missing_reference");
+  let proofHeader = null;
+  if (opts.paymentHeader) {
+    const v = opts.x402Version ?? paymentHeaderVersion(opts.paymentHeader);
+    proofHeader = proofHeaderForVersion(v);
+    if (!proofHeader) {
+      return { ...UNKNOWN("unsupported_x402_version"), safe_to_retry_same_payload: false, why: `paymentHeader has x402Version ${JSON.stringify(v)}; only 1 (X-PAYMENT) and 2 (PAYMENT-SIGNATURE) are supported. Nothing was sent.` };
+    }
+  }
   const ac = typeof AbortController === "function" ? new AbortController() : null;
   const timer = ac ? setTimeout(() => ac.abort(), opts.timeoutMs ?? AFTER_PAY_TIMEOUT_MS) : null;
   try {
     const headers = { "content-type": "application/json", accept: "application/json" };
-    if (opts.paymentHeader) headers["payment-signature"] = String(opts.paymentHeader);
+    if (proofHeader) headers[proofHeader.toLowerCase()] = String(opts.paymentHeader); // 1.6.0: by x402Version
     if (opts.apiKey) headers.authorization = "Bearer " + String(opts.apiKey); // 1.3.0 hosted mode (opt-in)
     const r = await f(opts.url || PAYMENT_STATUS_URL, { method: "POST", headers, body: JSON.stringify(body), ...(ac ? { signal: ac.signal } : {}) });
     let j = null;

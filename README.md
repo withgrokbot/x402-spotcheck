@@ -344,3 +344,16 @@ const pay = wrapFetchWithPayment(spotCheckFetch(fetch, {
 `mode: "observe"` logs would-be denials and does not reserve or abort. If policy or the ledger throws, a payment above `failClosedAboveAtomic` (default `0`) is denied and a smaller one is allowed. Both are written down. `audit.mayResign(id)` is true only when payment-status verified `not_landed` and `safe_to_resign`. Landed, pending, unknown, canceled, and any unverified receipt never re-sign. Pending and unknown stay open for `audit.reconcile()`, which waits until `validBefore` + 120s (or 120s after the reservation when the payload has no `validBefore`, e.g. Solana) and pages `onEscalate` when a row is still unknown after 24h. `audit.ingestSkips()` reads `https://402xagent.com/v1/skips.json` (following `next` only on the same origin; a feed failure resolves `{ added: 0, error }`) and turns those rows into payTo priors (a `pay_to_mismatch` or a testnet-listed mainnet charge denies; a first price or network mismatch asks for `auditApproved` on the hook context).
 
 A clean HTTP 200 does not call `afterPay` (that hook is for timeouts, 5xx, and a second 402). `onPayment` stores the payload, and the reconciler settles it once the authorization is old enough to ask about. Checks and payment-status share the 5 free calls per UTC day.
+
+## Proof header by x402 version (unreleased)
+`afterPay` sends `PAYMENT-SIGNATURE` for x402 v2 and `X-PAYMENT` for v1. It reads the version from `x402Version` or from the payment header itself. Any other version returns `unknown` / `unsupported_x402_version` and nothing is sent.
+
+## Persistent audit ledger (unreleased, Node >= 22.13)
+```js
+import { createAudit } from "x402-spotcheck/audit";
+import { openAuditStore } from "x402-spotcheck/audit/sqlite";
+const audit = createAudit({ store: await openAuditStore("./audit.db"), payloadKey, policy });
+// ... on shutdown
+await audit.close();
+```
+This is opt-in. Without `store` the ledger stays in memory, exactly as in 1.5.x. Only one process can write to a given file. If the store is unavailable, payments are refused (`audit_store_unavailable`), except in observe mode.

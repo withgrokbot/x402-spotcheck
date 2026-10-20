@@ -110,6 +110,10 @@ export interface AuditLayer {
   settle(result: any, ctx?: any): Promise<SettlementAdvice>;
   exportChain(range?: { from?: number; to?: number }): ReturnType<Ledger["exportChain"]>;
   verifyChain(): Promise<{ valid: boolean; seq: number; reason: string }>;
+  /** The persistent store, when one was passed (x402-spotcheck/audit/sqlite). */
+  store: import("./audit-sqlite.js").AuditStore | null;
+  /** Flush and close the store (no-op without one). */
+  close(): Promise<void>;
   exportState(): Promise<{ entries: LedgerEntry[]; payloads: Record<string, any>; reservations: any[] }>;
 }
 export interface AuditOptions {
@@ -122,6 +126,8 @@ export interface AuditOptions {
   failClosedAboveAtomic?: bigint | number | string;
   /** Use a random 32-byte key (Uint8Array), or a string that is itself a high-entropy secret (or HKDF-derived). A string is SHA-256 hashed once, unsalted: never pass a passphrase. */
   payloadKey?: string | Uint8Array;
+  /** Opt-in persistence: `await openAuditStore(path)` from x402-spotcheck/audit/sqlite (Node >= 22.13). Default: in memory. */
+  store?: import("./audit-sqlite.js").AuditStore;
   publicKey?: any;
   apiKey?: string;
   now?: () => number;
@@ -139,3 +145,5 @@ export interface AuditOptions {
 export declare function createAudit(opts?: AuditOptions): AuditLayer;
 export declare function skipReasonCode(row: { reason_code?: string; reason?: string }): string | null;
 export declare function fetchSkips(opts?: { fetch?: typeof fetch; url?: string; maxPages?: number }): Promise<any[]>;
+
+export declare class StoreUnavailableError extends Error { code: "audit_store_unavailable"; cause?: unknown }

@@ -1,7 +1,11 @@
 # Changelog
 
-
-
+## Unreleased (branch phase-a/version-header-sqlite-ledger, not published)
+- `afterPay` picks the proof header from `x402Version`: `2` sends `PAYMENT-SIGNATURE` and `1` sends `X-PAYMENT`. The version comes from `opts.x402Version` or from the decoded `paymentHeader`. Any other version returns `unknown` with reason `unsupported_x402_version`, and nothing is sent. New helpers: `proofHeaderForVersion` and `paymentHeaderVersion`.
+- Optional persistent ledger at `x402-spotcheck/audit/sqlite`: `createAudit({ store: await openAuditStore(path) })`. It uses `node:sqlite`, so it needs Node 22.13 or later; the package engines stay at >=18 and the in-memory ledger is still the default.
+  - The chain, reservations and AES-GCM sealed payloads (AAD = reservation id) survive a restart. The chain is verified when the store opens, and plaintext payloads are never stored.
+  - There is one writer (exclusive lock). Each decision is flushed in one transaction (WAL, synchronous=FULL).
+  - A corrupt, locked or closed store makes `beforePayment` abort with `audit_store_unavailable`. Observe mode never aborts, and `deny: "throw"` rethrows. New: `StoreUnavailableError` and `audit.close()`.
 ## 1.5.1 (2026-10-20)
 - Types: removed a stray `apiKey?: string;` after the `AfterPayOptions` interface in `after.d.ts` that made `tsc` fail with TS1109. `apiKey` was already declared inside the interface. No runtime changes.
 ## 1.5.0 (2026-10-19)
