@@ -539,6 +539,28 @@ export function createAudit(opts = {}) {
   // A loaded chain must verify before the first step; a tampered file fails closed.
   const storeReady = store ? ledger.verify().then((v) => {
     if (!v.valid) throw new StoreUnavailableError(`audit store chain does not verify at seq ${v.seq}: ${v.reason}`);
+    if (loaded?.entries?.some((e) => e.__columnMismatch)) throw new StoreUnavailableError("audit store ledger row columns do not match their entries");
+    if (loaded) { // P4: reservation rows are not hash-chained; cross-check them against the chain
+      const seen = new Map();
+      for (const e of ledger.entries) {
+        if (!e.reservation_id) continue;
+        const x = seen.get(e.reservation_id) || {};
+        if (e.type === "reserved") x.amount = e.amount_atomic;
+        if (e.type === "settled" || e.type === "released") x.final = e.type;
+        seen.set(e.reservation_id, x);
+      }
+      for (const r of budgets.list()) {
+        const x = seen.get(r.id);
+        if (!x || x.amount == null) throw new StoreUnavailableError(`audit store reservation ${r.id} has no reserved entry in the chain`);
+        if (String(r.amount) !== String(x.amount)) throw new StoreUnavailableError(`audit store reservation ${r.id} amount ${r.amount} != chain ${x.amount}`);
+        if (r.status === "open" && x.final) throw new StoreUnavailableError(`audit store reservation ${r.id} is open but the chain says ${x.final}`);
+      }
+      for (const [id, x] of seen) if (x.amount != null && !budgets.get(id)) throw new StoreUnavailableError(`audit store reservation ${id} is missing`);
+    }
+    if (loaded?.head) { // P4: tail truncation check against the store's head anchor
+      const last = ledger.entries[ledger.entries.length - 1];
+      if (!last || `${last.seq}:${last.hash}` !== loaded.head) throw new StoreUnavailableError(`audit store head anchor ${loaded.head.split(":")[0]} does not match the last row (${last ? last.seq : 0}): truncated or rolled back`);
+    }
   }) : null;
   if (storeReady) storeReady.catch(() => {}); // surfaced on the first locked step
   const flushStore = () => store.flush({
@@ -576,11 +598,16 @@ export function createAudit(opts = {}) {
           await store.begin();
           try {
             await adoptChanges(store.changes());
-            const out = await fn();
+            let out, thrown = null;
+            try { out = await fn(); } catch (e) { if (e instanceof StoreUnavailableError) throw e; thrown = e; }
+            // P4: a step that throws on purpose (deny: "throw") still commits what it recorded (e.g. the denied entry);
+            // only store failures roll back. Found by crash-1000: denials used to surface as audit_store_unavailable.
             flushStore();
             store.commit();
+            if (thrown) throw thrown;
             return out;
           } catch (e) {
+            if (!(e instanceof StoreUnavailableError) && !store.inTransaction?.()) throw e;
             store.rollback();
             try { resync(); } catch { /* next step retries */ }
             throw e instanceof StoreUnavailableError ? e : new StoreUnavailableError("shared audit step failed: " + (e?.message || e), e);
