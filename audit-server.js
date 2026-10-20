@@ -22,8 +22,29 @@ export async function startAuditServer(opts = {}) {
   const kid = opts.kid || "audit-1";
   const store = await openAuditStore(dbPath, { shared: true });
   const audit = createAudit({ store, agentId: (ctx) => ctx.__client, payloadKey: opts.payloadKey || randomBytes(32), policy: opts.policy, networkConfig: opts.networkConfig, idempotencyKey: (ctx) => ctx.idempotencyKey });
+  // P4: client-reported payment-status is NOT trusted by default. With settlementVerifier (e.g. evm-verify.js) the
+  // claim is checked on-chain; without one it is downgraded to unverified (hold) unless trustClientStatus: true.
+  const verifier = opts.settlementVerifier || null;
+  const payers = opts.payers || null; // optional clientId -> payer address binding
+  const decodeAuth = (p) => { try { const j = JSON.parse(Buffer.from(String(p), "base64").toString("utf8")); return j?.payload?.authorization || null; } catch { return null; } };
+  async function settle(client, claim, ctx) {
+    const authz = decodeAuth(ctx.paymentPayload);
+    const rec = authz?.nonce ? audit.budgets.list().find((r) => r.nonce === String(authz.nonce)) : null;
+    const owned = rec && (rec.agent === client || rec.budgetId === client);
+    let checked;
+    if (!rec || !owned) checked = { ok: false, reason: "no_reservation_for_this_client" };
+    else if (payers && payers[client] && String(authz.from).toLowerCase() !== String(payers[client]).toLowerCase()) checked = { ok: false, reason: "payer_not_bound_to_client" };
+    else if (verifier) checked = await verifier({ claim, reservation: rec, authorization: authz });
+    else checked = opts.trustClientStatus === true ? { ok: true, trusted: true } : { ok: false, reason: "client_status_unverified" };
+    stats.verify[checked.ok ? "ok" : checked.reason] = (stats.verify[checked.ok ? "ok" : checked.reason] || 0) + 1;
+    const effective = checked.ok
+      ? (checked.trusted ? claim : { ...claim, status: checked.status, receipt_verified: true, safe_to_resign: checked.status === "not_landed", tx: checked.txHash ? { hash: checked.txHash, confirmations: checked.confirmations } : claim.tx, finality: checked.txHash ? { confirmations: checked.confirmations, min_confirmations: 1, reorg_safe: true } : claim.finality })
+      : { status: "unknown", receipt_verified: false, safe_to_resign: false, error: checked.reason };
+    const advice = await audit.onAfterPay(effective, ctx);
+    return { ...advice, verified: checked.ok, verification: checked.ok ? (checked.trusted ? "trusted_client" : "onchain") : checked.reason };
+  }
   const seen = new Map(); // `${client}:${nonce}` -> expiry
-  const stats = { requests: 0, refused: { auth: 0, replay: 0, stale: 0 }, ok: 0 };
+  const stats = { requests: 0, refused: { auth: 0, replay: 0, stale: 0 }, ok: 0, verify: {} };
   const publicJwk = { ...createPublicKey(signingKey).export({ format: "jwk" }), kid };
 
   const server = createServer(async (req, res) => {
@@ -52,7 +73,7 @@ export async function startAuditServer(opts = {}) {
       } else if (req.method === "POST" && path === "/v1/payment") {
         await audit.onPayment({ paymentPayload: input.paymentPayload, url: input.url }); result = { recorded: true };
       } else if (req.method === "POST" && path === "/v1/settle") {
-        result = await audit.onAfterPay(input.result || {}, input.ctx || {});
+        result = await settle(client, input.result || {}, input.ctx || {});
       } else if (req.method === "POST" && path === "/v1/release") {
         const ctx = input.reservationId ? { audit: { reservationId: String(input.reservationId) }, paymentRequired: { resource: { url: input.url } } } : undefined;
         await audit.onDecision({ ...(input.decision || {}), allowed: input.decision?.allowed ?? false }, ctx); result = { released: true };
