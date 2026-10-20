@@ -16,5 +16,6 @@ test("docs-check: a citation to a missing test or file fails; a claim without a 
   assert.match(checkDocs(tree("<!-- claims -->\n- x [T:a.test.mjs#no such test]\n<!-- /claims -->")).problems[0], /no test in a.test.mjs matches/);
   assert.match(checkDocs(tree("<!-- claims -->\n- x [T:gone.test.mjs#budget]\n<!-- /claims -->")).problems[0], /file missing/);
   assert.match(checkDocs(tree("<!-- claims -->\n- an uncited claim\n<!-- /claims -->")).problems[0], /claim without a test/);
+  assert.match(checkDocs(tree("<!-- claims -->\n- x [S:scripts/gone.mjs]\n<!-- /claims -->")).problems[0], /cited script missing/);
   assert.equal(checkDocs(tree("not a claim, and `[T:x#y]` in code is ignored")).problems.length, 0);
 });

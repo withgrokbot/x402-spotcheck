@@ -1,6 +1,6 @@
 // P5: every claim in docs/ must cite a test, and every citation must resolve. CI runs this via npm test.
 // Citation: [T:<file in test/>#<text>]; <text> must appear inside a string literal of that file (a test title or a
-// table case). Between <!-- claims --> and <!-- /claims -->, every list item must carry at least one citation.
+// table case). [S:<path>] cites a script, which must exist. Between <!-- claims --> and <!-- /claims -->, every list item must carry at least one citation.
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 export function checkDocs(root = new URL("..", import.meta.url).pathname) {
@@ -16,8 +16,12 @@ export function checkDocs(root = new URL("..", import.meta.url).pathname) {
       const strings = [...src.matchAll(/(["'`])((?:\\.|(?!\1).)*)\1/g)].map((s) => s[2]);
       if (!strings.some((s) => s.includes(want))) problems.push(`${f}: no test in ${m[1]} matches "${want}"`);
     }
+    for (const m of text.matchAll(/\[S:([^\]]+)\]/g)) {
+      cited.push(m[1]);
+      if (!existsSync(join(root, m[1].trim()))) problems.push(`${f}: cited script missing: ${m[1]}`);
+    }
     let inClaims = false, item = null;
-    const flush = () => { if (item !== null) { claims++; if (!/\[T:[^\]]+\]/.test(item)) problems.push(`${f}: claim without a test: ${item.slice(0, 90)}`); } item = null; };
+    const flush = () => { if (item !== null) { claims++; if (!/\[[TS]:[^\]]+\]/.test(item)) problems.push(`${f}: claim without a test: ${item.slice(0, 90)}`); } item = null; };
     for (const line of text.split("\n")) {
       if (line.includes("<!-- claims -->")) { inClaims = true; continue; }
       if (line.includes("<!-- /claims -->")) { flush(); inClaims = false; continue; }

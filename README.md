@@ -373,7 +373,7 @@ client.onBeforePaymentCreation(audit.beforePayment); // refuses when the service
 ```
 
 ## Docs
-[Threat model](docs/threat-model.md) · [Limits](docs/limits.md) · [Quickstart (Base Sepolia)](docs/quickstart.md). Every claim cites a test, and `npm run docs:check` (run in CI) fails if one is missing.
+[Threat model](docs/threat-model.md) · [Limits](docs/limits.md) · [Quickstart (Base Sepolia)](docs/quickstart.md) · [Results](docs/results.md). Every claim cites a test, and `npm run docs:check` (run in CI) fails if one is missing.
 
 ## Limits
 - Remote service: replay nonces are kept in memory for the 30 s window, so a service restart inside that window forgets them (the idempotency key still prevents a double booking). Clocks must agree within 30 s. If a client refuses a response (e.g. bad signature) after the service booked, the hold stays until it is released or reconciled. That is safe, but it uses budget. The service trusts an authenticated client's payment-status result.
