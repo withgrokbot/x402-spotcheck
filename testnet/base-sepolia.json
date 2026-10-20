@@ -1,0 +1,11 @@
+{
+  "name": "base-sepolia",
+  "testnet": true,
+  "network": "eip155:84532",
+  "chainId": 84532,
+  "rpcUrl": "https://sepolia.base.org",
+  "facilitatorUrl": "https://x402.org/facilitator",
+  "explorer": "https://sepolia.basescan.org",
+  "assets": { "USDC": { "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", "decimals": 6, "eip712": { "name": "USDC", "version": "2" } } },
+  "faucets": ["https://faucet.circle.com (USDC, Base Sepolia)", "https://docs.base.org/tools/network-faucets (ETH)"]
+}
