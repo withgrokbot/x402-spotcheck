@@ -7,6 +7,9 @@ import { verifyReceipt, canonicalize, receiptSigningInput, RECEIPT_KEYS_URL } fr
 const { publicKey, privateKey } = generateKeyPairSync("ed25519");
 const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-1" };
 const signed = (r) => ({ ...r, signature: sign(null, receiptSigningInput(r), privateKey).toString("base64url") });
+// Flip a bit in R (byte 0). The old tamper replaced the last 2 chars with "AA" (= last byte 0x00),
+// but the top byte of an Ed25519 S is always < 0x10, so it was a no-op in ~1/16 runs.
+const flip = (sig) => { const b = Buffer.from(sig, "base64url"); b[0] ^= 1; return b.toString("base64url"); };
 const R = { id: "sc-abc", kid: "test-1", verdict: "pay", amount_atomic: "20000", n: 1.5, nested: { z: 1, a: [true, null, "é"] } };
 
 test("JCS: RFC 8785 vectors (key order, numbers, escapes)", () => {
@@ -36,7 +39,7 @@ test("fetches the key set from /.well-known when no key is passed", async () => 
 });
 test("tampering, unsigned, wrong key, junk: invalid, never throws", async () => {
   const r = signed(R);
-  for (const bad of [{ ...r, verdict: "skip" }, { ...r, kid: "test-2" }, { ...r, extra: 1 }, { ...r, signature: r.signature.slice(0, -2) + "AA" }]) {
+  for (const bad of [{ ...r, verdict: "skip" }, { ...r, kid: "test-2" }, { ...r, extra: 1 }, { ...r, signature: flip(r.signature) }]) {
     assert.equal((await verifyReceipt(bad, { publicKey: { ...jwk, kid: bad.kid } })).valid, false);
   }
   assert.match((await verifyReceipt(R, { publicKey: jwk })).reason, /unsigned/);
