@@ -372,6 +372,9 @@ const audit = remoteAudit({ url: "http://127.0.0.1:8402", clientId: "agent-7", c
 client.onBeforePaymentCreation(audit.beforePayment); // refuses when the service is down, slow or mis-signed
 ```
 
+## Docs
+[Threat model](docs/threat-model.md) · [Limits](docs/limits.md) · [Quickstart (Base Sepolia)](docs/quickstart.md) · [Results](docs/results.md). Every claim cites a test, and `npm run docs:check` (run in CI) fails if one is missing.
+
 ## Limits
 - Remote service: replay nonces are kept in memory for the 30 s window, so a service restart inside that window forgets them (the idempotency key still prevents a double booking). Clocks must agree within 30 s. If a client refuses a response (e.g. bad signature) after the service booked, the hold stays until it is released or reconciled. That is safe, but it uses budget. The service trusts an authenticated client's payment-status result.
 - **Back-to-back payments on Base Sepolia (observed 2026-10-20):** the x402.org facilitator rejected some calls sent right after the previous one, before that transfer had confirmed, with `invalid_exact_evm_transaction_failed`. The cause is unconfirmed. The audit layer keeps that reservation held, which is safe: no double spend, and the budget is not released until payment-status says `not_landed`. Workaround: wait for the previous transaction to confirm before the next payment (`scripts/e2e-sepolia.mjs` does this).
