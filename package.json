@@ -37,6 +37,14 @@
     "./networks": {
       "types": "./networks.d.ts",
       "default": "./networks.js"
+    },
+    "./audit/remote": {
+      "types": "./audit-remote.d.ts",
+      "default": "./audit-remote.js"
+    },
+    "./audit/server": {
+      "types": "./audit-server.d.ts",
+      "default": "./audit-server.js"
     }
   },
   "files": [
@@ -60,15 +68,20 @@
     "audit-sqlite.js",
     "audit-sqlite.d.ts",
     "networks.js",
-    "networks.d.ts"
+    "networks.d.ts",
+    "audit-remote.js",
+    "audit-remote.d.ts",
+    "audit-server.js",
+    "audit-server.d.ts"
   ],
   "scripts": {
-    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs && node --test test/receipt.test.mjs && node --test test/after.test.mjs && node --test test/hosted.test.mjs && node --test test/test-kit.test.mjs && node --test test/expiry.test.mjs && node --test test/audit.test.mjs && node --test test/version-header.test.mjs && node --test test/audit-sqlite.test.mjs && node --test test/networks.test.mjs && node --test test/audit-shared.test.mjs && node --test test/property.test.mjs",
+    "test": "node test/test.mjs && node test/autopay.mjs && node --test test/v1.test.mjs && node --test test/receipt.test.mjs && node --test test/after.test.mjs && node --test test/hosted.test.mjs && node --test test/test-kit.test.mjs && node --test test/expiry.test.mjs && node --test test/audit.test.mjs && node --test test/version-header.test.mjs && node --test test/audit-sqlite.test.mjs && node --test test/networks.test.mjs && node --test test/audit-shared.test.mjs && node --test test/audit-remote.test.mjs && node --test test/property.test.mjs",
     "test:integration": "node test/integration.mjs",
     "e2e:mock": "node scripts/e2e-mock.mjs",
     "smoke:sepolia": "node scripts/sepolia-smoke.mjs",
     "e2e:sepolia": "node scripts/e2e-sepolia.mjs",
-    "demo:p2": "node scripts/p2-shared-demo.mjs"
+    "demo:p2": "node scripts/p2-shared-demo.mjs",
+    "demo:p3": "node scripts/p3-demo.mjs"
   },
   "keywords": [
     "402xagent",
