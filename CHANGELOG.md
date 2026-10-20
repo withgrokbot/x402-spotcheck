@@ -2,6 +2,8 @@
 
 
 
+## 1.5.1 (2026-10-20)
+- Types: removed a stray `apiKey?: string;` after the `AfterPayOptions` interface in `after.d.ts` that made `tsc` fail with TS1109. `apiKey` was already declared inside the interface. No runtime changes.
 ## 1.5.0 (2026-10-19)
 - Opt-in audit layer at `x402-spotcheck/audit`: `createAudit` and `auditPolicyHook`. Register it after the spending cap and before `spotCheckBeforePaymentHook`. It reserves budget before a signature, appends a hash-chained ledger, and denies by returning `{ abort: true }` (or throwing when `deny: "throw"`).
 - `mode: "observe"` logs would-be denials and does not reserve or abort. Enforcement is the default.

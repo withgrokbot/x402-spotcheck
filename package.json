@@ -1,6 +1,6 @@
 {
   "name": "x402-spotcheck",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Check before you pay, for x402 clients and routers. Local rules by default (no network calls, no tracking); the 402xAgent service is opt-in. Unknown means pay; skip only with a reason code.",
   "type": "module",
   "main": "index.js",
