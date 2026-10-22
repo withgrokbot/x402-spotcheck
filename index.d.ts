@@ -49,7 +49,7 @@ export interface SpotCheckOptions {
   /** ctx is passed only by spotCheckBeforePaymentHook (the hook context). */
   onDecision?: (d: SpotDecision, ctx?: any) => void | Promise<void>;
   /** 1.5.0 opt-in: the PAYMENT-SIGNATURE about to be sent, after the pre-sign check has passed. Observers never block. */
-  onPayment?: (info: { paymentPayload: string; url: string; method: string }) => void | Promise<void>;
+  onPayment?: (info: { paymentPayload: string; url: string; method: string; reservationId?: string }) => void | Promise<void>;
   cacheTtlMs?: number;
   /** service: hard deadline for the check, ms (default 1500); on expiry onUnavailable applies */
   timeoutMs?: number;

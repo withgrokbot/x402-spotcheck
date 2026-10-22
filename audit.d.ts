@@ -100,7 +100,7 @@ export interface AuditLayer {
   beforePayment: AuditHook;
   /** ctx: the before-payment hook context; when given, the reservation made for that ctx is the one released on a skip. */
   onDecision(d: any, ctx?: any): Promise<void>;
-  onPayment(info: { paymentPayload?: string; url?: string | null }): Promise<void>;
+  onPayment(info: { paymentPayload?: string; url?: string | null; reservationId?: string | null }): Promise<void>;
   onAfterPay(result: any, ctx?: { url?: string; paymentPayload?: string | null }): Promise<SettlementAdvice>;
   composeWith(spotHook: AuditHook): AuditHook;
   reconcile(): Promise<{ checked: number; escalations: any[] }>;

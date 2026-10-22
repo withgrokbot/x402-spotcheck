@@ -7,7 +7,7 @@ import { runAfterPay, needsAfterPay } from "./after.js";
 import { expiryOpts, judgeExpiry, EXPIRY_CODE } from "./expiry.js";
 export { judgeExpiry, EXPIRY_CODE, MAX_SKEW_S } from "./expiry.js";
 export { afterPay, needsAfterPay, PAYMENT_STATUS_URL } from "./after.js";
-export const VERSION = "1.6.0";
+export const VERSION = "1.6.1";
 export const DEFAULT_REF = "via-x402-spotcheck"; // 0.x default; since 1.0.0 sent only if you pass ref
 // Every earlier host serves the same Worker and stays valid; all are recognised as the check itself, never guarded.
 export const DEFAULT_ENDPOINT = "https://api.402xagent.com/v1/products/endpoint-spot-check";
@@ -304,7 +304,11 @@ export function createSpotChecker(opts = {}) {
       r = paid.res;
     } else if (r.status === 402) {
       const req = b64json(r.headers.get("payment-required") || "") || (await r.json().catch(() => ({})));
-      const amt = Number(((req.accepts || [])[0] || {}).amount);
+      const accs = Array.isArray(req.accepts) ? req.accepts : [];
+      // 1.6.1 (L5): pin payTo, network, asset and scheme like isFeeAccept on the autoPay path, not just the amount.
+      // Every offered option must be the 402xAgent fee, since payFetch's x402 client may pick any of them.
+      if (payFetch && (!accs.length || !accs.every((a) => isFeeAccept(a)))) return { unavailable: "402xAgent check needs payment (fee terms do not match the pinned payTo/network/asset)" };
+      const amt = accs.length ? Math.max(...accs.map((a) => Number(a.amount))) : NaN;
       if (!payFetch || !(amt / 1e6 <= maxCheckUsd)) return { unavailable: "402xAgent check needs payment" + (payFetch ? ` above maxCheckUsd ($${amt / 1e6})` : " (no payFetch given)") };
       r = await payFetch(u, { headers: { accept: "application/json" }, signal });
     }
@@ -392,9 +396,29 @@ function makeDecider(opts) {
     let d;
     try { d = await decide(url, o); } catch (e) { d = passThrough(url, "check error: " + String((e && e.message) || e)); }
     if (eo) d = withExpiry(d, o, eo); // 1.4.0 opt-in only
+    d = withCorrelation(d, o, ctx);
     if (opts.onDecision) { try { await (ctx === undefined ? opts.onDecision(d) : opts.onDecision(d, ctx)); } catch { /* observers never block */ } }
     return d;
   };
+}
+
+// 1.6.1 (M1): carry a correlation onto the decision so audit observers release the exact reservation.
+// reservationId comes from o.reservationId (spotCheckFetch: init.reservationId) or the hook context's ctx.audit;
+// nonce/amount/payTo/network come from the signed payload or the single judged requirement.
+function withCorrelation(d, o = {}, ctx) {
+  if (!d || typeof d !== "object") return d;
+  let rid = o.reservationId ?? null;
+  try { if (rid == null && ctx && typeof ctx === "object") rid = ctx.audit?.reservationId ?? null; } catch { rid = null; }
+  const acc = o.target && Array.isArray(o.target.accepts) && o.target.accepts.length === 1 ? o.target.accepts[0] : null;
+  const auth = o.authorization || null;
+  const correlation = {
+    reservationId: rid == null ? null : String(rid),
+    nonce: auth && auth.nonce ? String(auth.nonce) : null,
+    amount: auth && auth.value != null ? String(auth.value) : acc && acc.amount != null ? String(acc.amount) : null,
+    payTo: (auth && auth.to) || (acc && acc.payTo) || null,
+    network: (acc && acc.network) || null,
+  };
+  return { ...d, reservationId: correlation.reservationId, correlation };
 }
 
 // 1.4.0: opt-in expiry layer on top of any decision. Skips when every judged accepts entry (or the signed
@@ -415,14 +439,14 @@ function withExpiry(d, o = {}, eo) {
 }
 
 // A 402 came back: decide now, before the x402 client can sign anything.
-async function guard402(res, url, method, decide) {
+async function guard402(res, url, method, decide, rid = null) {
   const hdr = res.headers.get("payment-required");
   const fromHdr = hdr ? b64json(hdr) : null;
   const text = await res.text();
   let body = null;
   try { body = text ? JSON.parse(text) : null; } catch { body = null; }
   const pr = fromHdr || body;
-  const d = await decide(url, { method, target: pr && Array.isArray(pr.accepts) ? pr : null });
+  const d = await decide(url, { method, target: pr && Array.isArray(pr.accepts) ? pr : null, reservationId: rid });
   if (!d.allowed) throw new SpotCheckBlockedError(d);
   const untouched = () => new Response(text, { status: 402, statusText: res.statusText, headers: new Headers(res.headers) });
   if (!pr || !Array.isArray(pr.accepts)) return untouched(); // unreadable = unknown = pass through
@@ -440,10 +464,10 @@ function isSpotCheck(url, opts) {
   return [opts.endpoint, ...KNOWN_ENDPOINTS].some((e) => e && u.startsWith(e));
 }
 
-async function checkSigned(pay, url, method, decide) {
+async function checkSigned(pay, url, method, decide, rid = null) {
   const p = b64json(pay);
   const auth = (p && p.payload && p.payload.authorization) || null;
-  const d = await decide(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null, authorization: auth });
+  const d = await decide(url, { method, intent: readPaymentIntent(pay), target: p && p.accepted ? { accepts: [p.accepted] } : null, authorization: auth, reservationId: rid });
   if (!d.allowed) throw new SpotCheckBlockedError(d);
   const why = p && p.accepted ? await d.fits(p.accepted) : "";
   if (why) throw new SpotCheckBlockedError(d, "refused to send: " + why);
@@ -452,6 +476,10 @@ async function checkSigned(pay, url, method, decide) {
 /**
  * Wrap the fetch you hand to your x402 client. Local rules by default (no network calls of its own).
  *   const pay = wrapFetchWithPayment(spotCheckFetch(fetch), client);
+ * Enforces verdicts (skip/allow and per-requirement fit), NOT budgets: it reserves nothing. A daily budget is only
+ * enforced when createAudit().beforePayment (or your own cap) runs as an onBeforePaymentCreation hook. If you pass
+ * audit observers (onDecision/onPayment) without that hook, they log a one-time warning that no reservation is bound.
+ * init.reservationId (optional) is threaded into decide() and onPayment so the audit layer releases that exact reservation.
  */
 export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
   const decide = makeDecider({ fetch: fetchImpl, ...opts });
@@ -462,10 +490,11 @@ export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
     let pay = null;
     for (const h of PAY_HEADERS) pay = pay || headerOf(init.headers, h) || (isReq ? input.headers.get(h) : null);
     if (isSpotCheck(url, opts)) return fetchImpl(input, init);
+    const rid = init && init.reservationId != null ? String(init.reservationId) : null;
     if (pay) {
-      await checkSigned(pay, url, method, decide);
+      await checkSigned(pay, url, method, decide, rid);
       if (typeof opts.onPayment === "function") {
-        try { await opts.onPayment({ paymentPayload: pay, url, method }); } catch { /* observers never block a payment that already passed the check */ }
+        try { await opts.onPayment(rid ? { paymentPayload: pay, url, method, reservationId: rid } : { paymentPayload: pay, url, method }); } catch { /* observers never block a payment that already passed the check */ }
       }
       if (!opts.afterPay) return fetchImpl(input, init); // 1.1.0 behaviour unless afterPay is opted in
       let res;
@@ -480,7 +509,7 @@ export function spotCheckFetch(fetchImpl = globalThis.fetch, opts = {}) {
     }
     const res = await fetchImpl(input, init);
     if (res.status !== 402) return res;
-    return guard402(res, url, method, decide);
+    return guard402(res, url, method, decide, rid);
   };
 }
 

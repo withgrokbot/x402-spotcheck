@@ -725,17 +725,44 @@ export function createAudit(opts = {}) {
     const rec = id ? budgets.get(id) : null;
     return rec && rec.status === "open" ? rec : null;
   }
-  // Fallback when no reservation id reached us: the newest open reservation for this URL.
-  function newestOpenFor(...urls) {
+  // 1.6.1 (M1): resolve the reservation a decision/payment belongs to. Exact first (hook ctx binding, the threaded
+  // reservationId, the signed nonce); otherwise a URL(+amount/payTo) heuristic that only acts when exactly one own open
+  // reservation matches. An ambiguous match releases nothing (the hold stays for reconcile) and logs release_heuristic.
+  function openById(id) {
+    const rec = id != null ? budgets.get(String(id)) : null;
+    return rec && rec.status === "open" && (!shared || mine.has(rec.id)) ? rec : null;
+  }
+  async function resolveOpen(ctx, corr = {}, ...urls) {
+    const exact = boundOpen(ctx) || openById(corr.reservationId)
+      || (corr.nonce ? budgets.listOpen().find((r) => r.nonce === corr.nonce && (!shared || mine.has(r.id))) || null : null);
+    if (exact) return exact;
     const want = urls.filter(Boolean);
     if (!want.length) return null;
-    return budgets.listOpen().filter((r) => (!shared || mine.has(r.id)) && want.includes(r.url)).sort((a, b) => b.n - a.n)[0] || null;
+    const hits = budgets.listOpen().filter((r) => (!shared || mine.has(r.id)) && want.includes(r.url)
+      && (corr.amount == null || r.amount.toString() === String(corr.amount))
+      && (!corr.payTo || !r.payTo || samePayTo(corr.payTo, r.payTo, corr.network || r.network)));
+    if (!hits.length) return null;
+    await ledger.append({
+      type: "risk_flag", agent: opts.agentId || "default", url: hits[0].url, reason: "release_heuristic",
+      candidates: hits.length, id: hits.length === 1 ? hits[0].id : null, released: hits.length === 1,
+      policyVersion: policy.version, ts: iso(now()),
+    });
+    return hits.length === 1 ? hits[0] : null;
+  }
+  // 1.6.1 (L6): spotCheckFetch enforces verdicts, not budgets. Warn once if observers fire with nothing reserved.
+  let warnedUnbound = false;
+  function warnIfUnbound() {
+    if (warnedUnbound || budgets.list().length) return;
+    warnedUnbound = true;
+    const msg = "x402-spotcheck audit: onDecision/onPayment fired with zero reservations bound; budgets are not enforced. Add audit.beforePayment as an onBeforePaymentCreation hook.";
+    try { (opts.logger && typeof opts.logger.warn === "function" ? opts.logger.warn : console.warn)(msg); } catch { /* never block */ }
   }
 
   async function releaseOpen(ctx, info) {
     return lock(async () => {
       let rec = null;
-      rec = boundOpen(ctx) || newestOpenFor(requirementOf(ctx)?.url);
+      const req = requirementOf(ctx);
+      rec = await resolveOpen(ctx, { amount: req?.amount ?? null, payTo: req?.payTo || null, network: req?.network || null }, req?.url);
       if (!rec || rec.status !== "open") return null;
       budgets.release(rec.id, { resign: "never", status: "skip" });
       await ledger.append({
@@ -749,6 +776,7 @@ export function createAudit(opts = {}) {
   // ctx is the before-payment hook context, when the caller passes it (spotCheckBeforePaymentHook does).
   async function onDecision(d, ctx) {
     if (!d || typeof d !== "object") return;
+    if (!boundOpen(ctx)) warnIfUnbound();
     try {
       await lock(async () => {
         await ledger.append({
@@ -757,7 +785,8 @@ export function createAudit(opts = {}) {
           receipt_verified: null,
         });
         if (d.allowed === false) {
-          const rec = boundOpen(ctx) || newestOpenFor(d.url, requirementOf(ctx)?.url);
+          const corr = { ...(d.correlation || {}), reservationId: d.reservationId ?? d.correlation?.reservationId ?? null };
+          const rec = await resolveOpen(ctx, corr, d.url, requirementOf(ctx)?.url);
           if (rec) {
             budgets.release(rec.id, { resign: "never", status: "skip" });
             await ledger.append({
@@ -815,11 +844,13 @@ export function createAudit(opts = {}) {
     return advice;
   }
 
-  async function attach(payload, url) {
+  async function attach(payload, url, reservationId = null) {
     const decoded = decodePayment(payload);
     return lock(async () => {
       let rec = null;
-      if (decoded?.nonce) rec = budgets.list().find((r) => r.nonce === decoded.nonce) || null;
+      const byId = openById(reservationId);
+      if (byId && (!byId.nonce || byId.nonce === decoded?.nonce)) rec = byId;
+      if (!rec && decoded?.nonce) rec = budgets.list().find((r) => r.nonce === decoded.nonce) || null;
       if (!rec) {
         const fits = (r, checkUrl) => {
           if (r.nonce) return false; // a payload already claimed this reservation; do not steal its nonce
@@ -845,7 +876,8 @@ export function createAudit(opts = {}) {
 
   async function onPayment(info = {}) {
     if (!info.paymentPayload) return;
-    try { await attach(info.paymentPayload, info.url || null); }
+    warnIfUnbound();
+    try { await attach(info.paymentPayload, info.url || null, info.reservationId ?? null); }
     catch {
       try { await ledger.append({ type: "risk_flag", reason: "payload_not_stored", url: info.url || null, agent: opts.agentId || "default", ts: iso(now()), policyVersion: policy.version }); } catch { /* already fail-open */ }
     }

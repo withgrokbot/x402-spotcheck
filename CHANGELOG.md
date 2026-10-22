@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.1 (2026-10-22)
+- Security (M1): a skip or payment no longer touches another call's reservation when two payments to the same URL are in flight. `decide()` threads a correlation (`d.reservationId`, `d.correlation` with nonce/amount/payTo/network) to `onDecision`; `spotCheckFetch` accepts `init.reservationId` and passes it to `onPayment`. The URL fallback acts only on a unique match; an ambiguous match releases nothing and every heuristic use logs a `release_heuristic` risk flag.
+- Security (L5): the legacy `payFetch` check-fee path now pins scheme, payTo, network and asset to `CHECK_FEE_TERMS` (as `isFeeAccept` does for `autoPayCheck`), not just the amount.
+- Docs/warning (L6): `spotCheckFetch` enforces verdicts, not budgets (JSDoc + README). Audit observers log a one-time warning when they fire with zero reservations bound.
+
 ## 1.6.0 (2026-10-20)
 - Battle-test fixes and hardening:
   - The authorize service no longer trusts client-reported payment-status. Claims are held as unverified unless a `settlementVerifier` confirms them (new `x402-spotcheck/audit/evm-verify`: an on-chain check of Transfer + AuthorizationUsed, and authorizationState for not_landed) or `trustClientStatus: true` is set. A settle for another client's reservation is refused, and `payers` binds clients to payer addresses.
