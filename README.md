@@ -98,7 +98,7 @@ So `pay(...)` throws `SpotCheckBlockedError` and nothing is signed onto the wire
 
 ## What gets checked
 
-402xAgent probes the target once (SSRF-safe, GET, or POST for POST requests) and never pays it. The verdict:
+402xAgent probes the target once (GET, or POST for POST requests; private, loopback and link-local addresses are blocked on every redirect hop) and never pays it. The verdict:
 
 - `pay`: the 402 parses, it asks for the canonical USDC on a supported mainnet, and its price, network and pay-to match what's expected.
 - `skip`: no paywall (no 402 terms at all), a price, network or pay-to that differs from the listing, a testnet or unsupported network, a token other than canonical USDC, or an unreadable 402.
