@@ -349,12 +349,15 @@ test("a skip releases the reservation for its own call when two are open on one 
     assert.equal(left[0].id, keep.audit.reservationId);
   }
 
-  // No ctx: newest open match is released instead of none.
+  // 1.6.1 (M1): no ctx and two identical open matches is ambiguous, so nothing is released (hold kept).
   const { layer: l3 } = make({});
   const c1 = ctx("1000"), c2 = ctx("1000");
   await l3.beforePayment(c1); await l3.beforePayment(c2);
   await l3.onDecision({ allowed: false, url: URL, verdict: "skip" });
-  assert.deepEqual(l3.openReservations().map((x) => x.id), [c1.audit.reservationId]);
+  assert.equal(l3.openReservations().length, 2);
+  // With the threaded reservation id, the exact one is released.
+  await l3.onDecision({ allowed: false, url: URL, verdict: "skip", reservationId: c1.audit.reservationId });
+  assert.deepEqual(l3.openReservations().map((x) => x.id), [c2.audit.reservationId]);
 });
 
 test("skip rows without an id are not double-counted on re-ingest", async () => {
